@@ -110,6 +110,10 @@ func TestLoadErrors(t *testing.T) {
 	if err := os.WriteFile(typo, []byte("limitter:\n  max_failures: 1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	unitless := filepath.Join(dir, "unitless.yaml")
+	if err := os.WriteFile(unitless, []byte("server:\n  write_timeout: 60\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name string
@@ -124,7 +128,8 @@ func TestLoadErrors(t *testing.T) {
 		{"proxy without trust", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_PROXY_HEADER": "X-Real-IP"}, nil, "requires server.trusted_proxies"},
 		{"bad proxy", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_TRUSTED_PROXIES": "nope"}, nil, "invalid IP or CIDR"},
 		{"half tls", map[string]string{"SECURE_KEY": validKey, "GOFTP_TLS_CERT_FILE": "cert.pem"}, nil, "must be set together"},
-		{"zero timeout", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_READ_TIMEOUT": "0s"}, nil, "timeouts must be positive"},
+		{"zero timeout", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_READ_TIMEOUT": "0s"}, nil, "at least 1s"},
+		{"unitless timeout", map[string]string{"SECURE_KEY": validKey}, []string{"--config", unitless}, "at least 1s"},
 		{"negative limiter", map[string]string{"SECURE_KEY": validKey, "GOFTP_LIMITER_MAX_FAILURES": "-1"}, nil, "must not be negative"},
 		{"short window", map[string]string{"SECURE_KEY": validKey, "GOFTP_LIMITER_WINDOW": "500ms"}, nil, "at least 1s"},
 		{"positional arg", map[string]string{"SECURE_KEY": validKey}, []string{"extra"}, "unexpected arguments"},

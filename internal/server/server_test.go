@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -11,13 +14,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"go.uber.org/zap/zaptest/observer"
 
 	"goftp/internal/config"
 )
@@ -27,7 +30,41 @@ const testKey = "test-key-0123456789"
 type fixture struct {
 	srv  *Server
 	dir  string
-	logs *observer.ObservedLogs
+	logs *logSink
+}
+
+// logSink captures JSON log lines exactly as production would encode them.
+type logSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logSink) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *logSink) Sync() error { return nil }
+
+// entries returns the decoded log lines with the given message.
+func (l *logSink) entries(msg string) []map[string]any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []map[string]any
+	for _, line := range bytes.Split(l.buf.Bytes(), []byte("\n")) {
+		var m map[string]any
+		if json.Unmarshal(line, &m) == nil && m["msg"] == msg {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+func (l *logSink) raw() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
 }
 
 func newFixture(t *testing.T, mutate ...func(*config.Config)) *fixture {
@@ -48,8 +85,9 @@ func newFixture(t *testing.T, mutate ...func(*config.Config)) *fixture {
 	for _, m := range mutate {
 		m(cfg)
 	}
-	core, logs := observer.New(zapcore.DebugLevel)
-	srv, err := New(cfg, zap.New(core))
+	logs := &logSink{}
+	enc := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
+	srv, err := New(cfg, zap.New(zapcore.NewCore(enc, logs, zapcore.DebugLevel)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -417,43 +455,39 @@ func TestMethodNotAllowed(t *testing.T) {
 
 func TestAccessLog(t *testing.T) {
 	f := newFixture(t)
-	f.write(t, "a.txt", "a")
+	f.write(t, "a.txt", "hello")
 
 	f.do(t, "GET", keyed("/a.txt"))
+	f.do(t, "HEAD", keyed("/a.txt"))
 	f.do(t, "GET", "/a.txt?key=wrong")
 	f.do(t, "POST", "/a.txt")
+	f.do(t, "PROPFIND", "/a.txt")
 	f.do(t, "GET", "/missing")
+	f.do(t, "GET", "/")
 
-	var statuses []int64
-	for _, e := range f.logs.FilterMessage("request").All() {
-		ctx := e.ContextMap()
-		if strings.Contains(ctx["path"].(string), "?") {
-			t.Errorf("query string logged: %v", ctx["path"])
-		}
-		statuses = append(statuses, ctx["status"].(int64))
+	var got []string
+	for _, e := range f.logs.entries("request") {
+		got = append(got, fmt.Sprintf("%s %s %v %v", e["method"], e["path"], e["status"], e["bytes"]))
 	}
-	if got := fmtInts(statuses); got != "200 403 405 404" {
-		t.Errorf("logged statuses %s", got)
+	want := []string{
+		"GET /a.txt 200 5",
+		"HEAD /a.txt 200 0",
+		"GET /a.txt 403 7",
+		"POST /a.txt 405 18",
+		"PROPFIND /a.txt 405 18",
+		"GET /missing 404 9",
 	}
-	denied := f.logs.FilterMessage("access denied").All()
-	if len(denied) != 1 || denied[0].ContextMap()["reason"] != "invalid key" {
+	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
+		t.Errorf("access log:\n got %q\nwant %q (+ listing)", got, want)
+	}
+
+	denied := f.logs.entries("access denied")
+	if len(denied) != 1 || denied[0]["reason"] != "invalid key" {
 		t.Errorf("access denied entries: %v", denied)
 	}
-	for _, e := range f.logs.All() {
-		for _, v := range e.ContextMap() {
-			if s, ok := v.(string); ok && strings.Contains(s, testKey) {
-				t.Errorf("key leaked into log entry %q", e.Message)
-			}
-		}
+	if strings.Contains(f.logs.raw(), testKey) || strings.Contains(f.logs.raw(), "key=") {
+		t.Error("access key or query string leaked into logs")
 	}
-}
-
-func fmtInts(v []int64) string {
-	s := make([]string, len(v))
-	for i, n := range v {
-		s[i] = strconv.FormatInt(n, 10)
-	}
-	return strings.Join(s, " ")
 }
 
 func TestLimiter(t *testing.T) {
@@ -462,18 +496,57 @@ func TestLimiter(t *testing.T) {
 	})
 	f.write(t, "a.txt", "a")
 
-	for i := 0; i < 10; i++ {
-		resp, _ := f.do(t, "GET", keyed("/a.txt"))
-		expectStatus(t, resp, 200)
+	// Concurrent successful requests must never count as failures.
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", keyed("/a.txt"), nil)
+			resp, err := f.srv.App().Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+			if err != nil || resp.StatusCode != 200 {
+				t.Errorf("concurrent request: %v %v", err, resp)
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Request-level errors (here: 405) are not credential guesses.
+	for i := 0; i < 5; i++ {
+		resp, _ := f.do(t, "POST", "/a.txt")
+		expectStatus(t, resp, 405)
 	}
 	for i := 0; i < 3; i++ {
 		resp, _ := f.do(t, "GET", "/a.txt?key=guess"+strconv.Itoa(i))
 		expectStatus(t, resp, 403)
 	}
-	resp, _ := f.do(t, "GET", keyed("/a.txt"))
+	resp, body := f.do(t, "GET", keyed("/a.txt"))
 	expectStatus(t, resp, http.StatusTooManyRequests)
-	if resp.Header.Get("Retry-After") != "60" {
-		t.Errorf("Retry-After %q", resp.Header.Get("Retry-After"))
+	if ra, err := strconv.Atoi(resp.Header.Get("Retry-After")); err != nil || ra < 59 || ra > 60 || body != "Too Many Requests" {
+		t.Errorf("429 response: Retry-After %q, body %q", resp.Header.Get("Retry-After"), body)
+	}
+}
+
+func TestFailureLimiterWindow(t *testing.T) {
+	l := newFailureLimiter(2, time.Minute)
+	now := time.Unix(1000, 0)
+	l.fail("a", now)
+	if l.blockedFor("a", now) != 0 {
+		t.Fatal("blocked below the limit")
+	}
+	l.fail("a", now.Add(time.Second))
+	if got := l.blockedFor("a", now.Add(2*time.Second)); got != 58*time.Second {
+		t.Fatalf("blockedFor = %v, want 58s", got)
+	}
+	if l.blockedFor("b", now) != 0 {
+		t.Fatal("unrelated client blocked")
+	}
+	if l.blockedFor("a", now.Add(time.Minute)) != 0 {
+		t.Fatal("block outlived the window")
+	}
+	l.fail("c", now.Add(2*time.Minute))
+	if _, ok := l.hits["a"]; ok {
+		t.Error("expired entries are not swept")
 	}
 }
 
@@ -483,5 +556,25 @@ func TestErrorResponsesAreGeneric(t *testing.T) {
 	expectStatus(t, resp, 404)
 	if body != "Not Found" || resp.Header.Get("Content-Type") != fiber.MIMETextPlainCharsetUTF8 {
 		t.Errorf("404 response %q %q", body, resp.Header.Get("Content-Type"))
+	}
+}
+
+func TestLongNonASCIIPath(t *testing.T) {
+	f := newFixture(t)
+	segment := strings.Repeat("é", 100) // 200 bytes on disk, 600 percent-encoded
+	var parts []string
+	for i := 0; i < 15; i++ {
+		parts = append(parts, segment)
+	}
+	name := strings.Join(parts, "/") + "/f.txt"
+	f.write(t, name, "deep")
+
+	raw := escapePath("/" + name)
+	if len(raw) < 9000 {
+		t.Fatalf("path only %d bytes", len(raw))
+	}
+	resp, body := f.do(t, "GET", keyed(raw), "Cookie", "session="+strings.Repeat("c", 1024))
+	if resp.StatusCode != 200 || body != "deep" {
+		t.Fatalf("status %d, body %q", resp.StatusCode, body)
 	}
 }

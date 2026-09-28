@@ -14,7 +14,7 @@ log:
   format: json           # json or console
 
 server:
-  read_timeout: 10s      # time allowed to read a request
+  read_timeout: 10s      # time allowed to read a request (always use units)
   write_timeout: 1m      # max time without write progress during a response
   idle_timeout: 2m       # keep-alive idle time
   shutdown_timeout: 10s  # grace period for in-flight requests on shutdown
@@ -27,6 +27,6 @@ tls:                     # serve HTTPS directly (enables HSTS)
   cert_file: ""
   key_file: ""
 
-limiter:                 # per-client budget of failed (4xx/5xx) requests
+limiter:                 # per-client budget of failed (4xx) requests
   max_failures: 20       # 0 disables
   window: 1m

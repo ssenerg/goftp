@@ -90,7 +90,11 @@ func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
 		err  error
 	)
 	if e.Type()&fs.ModeSymlink != 0 {
-		info, err = s.root.Stat(rootName(path.Join(dirPath, name)))
+		target := rootName(path.Join(dirPath, name))
+		if !s.visible(target) {
+			return listItem{}, false
+		}
+		info, err = s.root.Stat(target)
 	} else {
 		info, err = e.Info()
 	}

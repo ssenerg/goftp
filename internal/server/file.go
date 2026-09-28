@@ -10,10 +10,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"go.uber.org/zap"
 )
 
 // serveFile streams f (taking ownership of it) with Range and conditional
@@ -103,47 +103,66 @@ func sniffType(f *os.File) string {
 
 // bodyStream feeds a response body from an open file. fasthttp applies
 // WriteTimeout once per response, so the stream re-arms the write deadline
-// on every read: a transfer only times out when the client stops reading,
-// not when a large download simply takes long.
+// before every write: a transfer only times out when the client stops
+// reading, not when a large download simply takes long.
 type bodyStream struct {
 	r       io.Reader
 	file    *os.File
 	conn    net.Conn
 	timeout time.Duration
-	log     *zap.Logger
-	path    string
-	ip      string
-	read    int64
+	sent    int64
+	onClose func(sent int64, err error)
 }
+
+var copyBufs = sync.Pool{New: func() any { b := make([]byte, 64<<10); return &b }}
 
 func (s *Server) newBodyStream(c fiber.Ctx, f *os.File) *bodyStream {
-	return &bodyStream{
-		file:    f,
-		conn:    c.RequestCtx().Conn(),
-		timeout: s.cfg.Server.WriteTimeout,
-		log:     s.log,
-		path:    strings.Clone(c.Path()),
-		ip:      strings.Clone(c.IP()),
-	}
+	return &bodyStream{file: f, conn: c.RequestCtx().Conn(), timeout: s.cfg.Server.WriteTimeout}
 }
 
-func (b *bodyStream) Read(p []byte) (int, error) {
+func (b *bodyStream) arm() {
 	if b.conn != nil {
 		_ = b.conn.SetWriteDeadline(time.Now().Add(b.timeout))
 	}
+}
+
+// WriteTo is fasthttp's fixed-length path; it copies in large chunks.
+func (b *bodyStream) WriteTo(w io.Writer) (int64, error) {
+	bp := copyBufs.Get().(*[]byte)
+	defer copyBufs.Put(bp)
+	var n int64
+	for {
+		nr, rerr := b.r.Read(*bp)
+		if nr > 0 {
+			b.arm()
+			nw, werr := w.Write((*bp)[:nr])
+			n += int64(nw)
+			b.sent += int64(nw)
+			if werr != nil {
+				return n, werr
+			}
+		}
+		if rerr == io.EOF {
+			return n, nil
+		}
+		if rerr != nil {
+			return n, rerr
+		}
+	}
+}
+
+// Read is used for chunked responses.
+func (b *bodyStream) Read(p []byte) (int, error) {
+	b.arm()
 	n, err := b.r.Read(p)
-	b.read += int64(n)
+	b.sent += int64(n)
 	return n, err
 }
 
 // CloseWithError is called by fasthttp once the response is written.
 func (b *bodyStream) CloseWithError(err error) error {
-	if err != nil {
-		b.log.Debug("transfer aborted",
-			zap.String("ip", b.ip),
-			zap.String("path", b.path),
-			zap.Int64("read", b.read),
-			zap.Error(err))
+	if b.onClose != nil {
+		b.onClose(b.sent, err)
 	}
 	return b.file.Close()
 }

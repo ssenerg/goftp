@@ -34,6 +34,10 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if err != nil {
 		return s.openError(err)
 	}
+	if !s.visible(rootName(urlPath)) {
+		_ = f.Close()
+		return fiber.ErrNotFound
+	}
 	info, err := f.Stat()
 	if err != nil {
 		_ = f.Close()
@@ -81,6 +85,22 @@ func rootName(urlPath string) string {
 		return name
 	}
 	return "."
+}
+
+// visible reports whether name resolves, through any symlinks, to a path
+// in the root without dot components. os.Root already guarantees
+// containment; this extends the dotfile rule to symlink targets.
+func (s *Server) visible(name string) bool {
+	real, err := filepath.EvalSymlinks(filepath.Join(s.rootPath, filepath.FromSlash(name)))
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(s.rootPath, real)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel == "." || !strings.Contains("/"+rel, "/.")
 }
 
 func (s *Server) openError(err error) error {

@@ -14,6 +14,9 @@ import (
 func TestSymlinks(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "real/file.txt", "inside")
+	f.write(t, ".git/config", "secret")
+	f.write(t, ".env", "secret")
+	f.write(t, "real/.hidden/x", "secret")
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
 		t.Fatal(err)
@@ -26,6 +29,9 @@ func TestSymlinks(t *testing.T) {
 		"to-parent":   "..",
 		"abs-inside":  filepath.Join(f.dir, "real"),
 		"dangling":    "missing",
+		"pub":         ".git",
+		"env":         ".env",
+		"deep":        "real/.hidden",
 	}
 	for name, target := range links {
 		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
@@ -42,6 +48,10 @@ func TestSymlinks(t *testing.T) {
 		"/abs-inside/file.txt":    404, // os.Root rejects absolute link targets
 		"/dangling":               404,
 		"/to-real/../to-file.txt": 200,
+		"/pub/config":             404, // links into hidden paths count as hidden
+		"/pub/":                   404,
+		"/env":                    404,
+		"/deep/x":                 404,
 	}
 	for p, want := range tests {
 		resp, body := f.do(t, "GET", keyed(p))
@@ -56,7 +66,7 @@ func TestSymlinks(t *testing.T) {
 			t.Errorf("listing lacks %s", want)
 		}
 	}
-	for _, hidden := range []string{"to-outside", "to-secret", "to-parent", "abs-inside", "dangling"} {
+	for _, hidden := range []string{"to-outside", "to-secret", "to-parent", "abs-inside", "dangling", "pub", "env", "deep"} {
 		if strings.Contains(body, hidden) {
 			t.Errorf("listing shows unusable link %s", hidden)
 		}

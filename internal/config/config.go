@@ -141,8 +141,9 @@ func (c *Config) normalize() error {
 	}
 
 	s := &c.Server
-	if s.ReadTimeout <= 0 || s.WriteTimeout <= 0 || s.IdleTimeout <= 0 || s.ShutdownTimeout <= 0 {
-		errs = append(errs, errors.New("server timeouts must be positive"))
+	// Also catches unitless numbers, which decode as nanoseconds.
+	if min(s.ReadTimeout, s.WriteTimeout, s.IdleTimeout, s.ShutdownTimeout) < time.Second {
+		errs = append(errs, errors.New("server timeouts must be at least 1s (use units, e.g. 30s)"))
 	}
 	s.ProxyHeader = strings.TrimSpace(s.ProxyHeader)
 	proxies := s.TrustedProxies[:0]

@@ -2,10 +2,18 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -34,8 +42,8 @@ func startServer(t *testing.T, f *fixture) (string, context.CancelFunc) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if entries := f.logs.FilterMessage("listening").All(); len(entries) > 0 {
-			return entries[0].ContextMap()["addr"].(string), cancel
+		if entries := f.logs.entries("listening"); len(entries) > 0 {
+			return entries[0]["addr"].(string), cancel
 		}
 		select {
 		case err := <-done:
@@ -113,8 +121,9 @@ func TestSlowDownloadOutlivesWriteTimeout(t *testing.T) {
 	if elapsed := time.Since(start); elapsed < 600*time.Millisecond {
 		t.Skipf("download finished in %v; too fast to exercise the timeout", elapsed)
 	}
-	if aborted := f.logs.FilterMessage("transfer aborted").Len(); aborted != 0 {
-		t.Errorf("%d transfers aborted", aborted)
+	entry := requestEntry(t, f, "/big.bin")
+	if entry["error"] != nil || entry["bytes"] != float64(size) {
+		t.Errorf("access log: %v", entry)
 	}
 }
 
@@ -133,16 +142,12 @@ func TestStalledClientIsDisconnected(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for f.logs.FilterMessage("transfer aborted").Len() == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("server kept writing to a stalled client")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	entry := f.logs.FilterMessage("transfer aborted").All()[0].ContextMap()
+	entry := requestEntry(t, f, "/huge.bin")
 	if !strings.Contains(fmt.Sprint(entry["error"]), "timeout") {
 		t.Errorf("unexpected abort reason: %v", entry["error"])
+	}
+	if sent, _ := entry["bytes"].(float64); sent <= 0 || sent >= size {
+		t.Errorf("logged bytes %v", entry["bytes"])
 	}
 
 	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -152,29 +157,98 @@ func TestStalledClientIsDisconnected(t *testing.T) {
 	}
 }
 
-func TestGracefulShutdown(t *testing.T) {
-	f := newFixture(t)
-	f.write(t, "a.txt", "a")
-	addr, cancel := startServer(t, f)
-
-	resp, err := http.Get("http://" + addr + keyed("/a.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != 200 {
-		t.Fatalf("status %d", resp.StatusCode)
-	}
-
-	cancel()
+// requestEntry waits for the access log line of a download to appear.
+func requestEntry(t *testing.T, f *fixture, path string) map[string]any {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err != nil {
-			return
+	for {
+		for _, e := range f.logs.entries("request") {
+			if e["path"] == path {
+				return e
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no access log entry for %s", path)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("server still accepting connections after shutdown")
+}
+
+// Shutdown must wait for in-flight downloads instead of cutting them off.
+func TestShutdownWaitsForDownloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("slow")
+	}
+	const size = 32 << 20
+	f := newFixture(t)
+	sparseFile(t, f.dir, "big.bin", size)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- f.srv.Listen(ctx) }()
+	var addr string
+	for addr == "" {
+		if e := f.logs.entries("listening"); len(e) > 0 {
+			addr = e[0]["addr"].(string)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	_, _, resp := dialGet(t, addr, keyed("/big.bin"))
+	received := make(chan int64, 1)
+	go func() {
+		buf := make([]byte, 1<<20)
+		var n int64
+		for {
+			m, err := resp.Body.Read(buf)
+			n += int64(m)
+			if err != nil {
+				received <- n
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Listen did not return")
+	}
+	// Listen returned, so the download must already be complete on our side.
+	entries := f.logs.entries("request")
+	if len(entries) != 1 || entries[0]["bytes"] != float64(size) || entries[0]["error"] != nil {
+		t.Fatalf("download not finished when Listen returned: %v", entries)
+	}
+	if n := <-received; n != size {
+		t.Errorf("client received %d of %d bytes", n, size)
+	}
+	if _, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+		t.Error("server still accepting connections after shutdown")
+	}
+}
+
+// Idle connections time out without a misleading access log line.
+func TestIdleConnectionNotLoggedAsRequest(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 200 * time.Millisecond })
+	addr, _ := startServer(t, f)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, _ = io.Copy(io.Discard, conn)
+	for _, e := range f.logs.entries("request") {
+		if e["level"] != "debug" {
+			t.Errorf("idle connection logged at %v: %v", e["level"], e)
+		}
+	}
 }
 
 type deadlineConn struct {
@@ -188,18 +262,85 @@ func (d *deadlineConn) SetWriteDeadline(t time.Time) error {
 }
 
 func TestBodyStreamRearmsDeadline(t *testing.T) {
-	conn := &deadlineConn{}
-	b := &bodyStream{r: strings.NewReader(strings.Repeat("x", 10)), conn: conn, timeout: time.Minute}
-	buf := make([]byte, 4)
-	for {
-		if _, err := b.Read(buf); err != nil {
-			break
+	for _, useWriteTo := range []bool{true, false} {
+		conn := &deadlineConn{}
+		data := strings.Repeat("x", 200<<10)
+		b := &bodyStream{r: strings.NewReader(data), conn: conn, timeout: time.Minute}
+		var out bytes.Buffer
+		if useWriteTo {
+			if _, err := b.WriteTo(&out); err != nil {
+				t.Fatal(err)
+			}
+		} else if _, err := io.CopyBuffer(struct{ io.Writer }{&out}, struct{ io.Reader }{b}, make([]byte, 4096)); err != nil {
+			t.Fatal(err)
+		}
+		if out.String() != data || b.sent != int64(len(data)) {
+			t.Fatalf("writeTo=%v: copied %d bytes, sent %d", useWriteTo, out.Len(), b.sent)
+		}
+		if len(conn.deadlines) < 3 {
+			t.Errorf("writeTo=%v: deadline re-armed %d times", useWriteTo, len(conn.deadlines))
+		}
+		if d := time.Until(conn.deadlines[0]); d < 50*time.Second {
+			t.Errorf("deadline too short: %v", d)
 		}
 	}
-	if len(conn.deadlines) < 3 || b.read != 10 {
-		t.Fatalf("deadline re-armed %d times, read %d bytes", len(conn.deadlines), b.read)
+}
+
+func TestTLS(t *testing.T) {
+	dir := t.TempDir()
+	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
+	pool := writeSelfSignedCert(t, certFile, keyFile)
+	f := newFixture(t, func(c *config.Config) {
+		c.TLS = config.TLSConfig{CertFile: certFile, KeyFile: keyFile}
+	})
+	f.write(t, "a.txt", "secure")
+	addr, _ := startServer(t, f)
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	resp, err := client.Get("https://" + addr + keyed("/a.txt"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if d := time.Until(conn.deadlines[0]); d < 50*time.Second {
-		t.Errorf("deadline too short: %v", d)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 || string(body) != "secure" {
+		t.Fatalf("status %d, body %q", resp.StatusCode, body)
 	}
+	if got := resp.Header.Get("Strict-Transport-Security"); got != "max-age=31536000" {
+		t.Errorf("HSTS header %q", got)
+	}
+}
+
+func writeSelfSignedCert(t *testing.T, certFile, keyFile string) *x509.CertPool {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(certPEM)
+	return pool
 }
