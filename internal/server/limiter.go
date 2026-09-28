@@ -1,22 +1,17 @@
 package server
 
 import (
-	"errors"
-	"math"
-	"strconv"
 	"sync"
 	"time"
-
-	"github.com/gofiber/fiber/v3"
 )
 
-// maxTrackedClients bounds the limiter's memory; beyond it new clients are
-// not tracked until old entries expire.
+// maxTrackedClients bounds the limiter's memory. When full, an arbitrary
+// entry is evicted.
 const maxTrackedClients = 100_000
 
-// failureLimiter blocks a client after too many 4xx responses within a
-// fixed window. Only completed failures count, so concurrent successful
-// requests can never lock a client out.
+// failureLimiter caps wrong access keys per client within a fixed window.
+// Checking and counting happen under one lock, so concurrent guesses cannot
+// slip past the budget.
 type failureLimiter struct {
 	max    int
 	window time.Duration
@@ -35,21 +30,34 @@ func newFailureLimiter(max int, window time.Duration) *failureLimiter {
 	return &failureLimiter{max: max, window: window, hits: make(map[string]*failures)}
 }
 
-// blockedFor returns how long key remains blocked, or 0.
-func (l *failureLimiter) blockedFor(key string, now time.Time) time.Duration {
+// attempt returns how long key is still blocked, or 0 if the attempt may
+// proceed, in which case a failed attempt is counted.
+func (l *failureLimiter) attempt(key string, failed bool, now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
 	f := l.hits[key]
-	if f == nil || f.count < l.max || !now.Before(f.reset) {
+	if f != nil && !now.Before(f.reset) {
+		f = nil
+	}
+	if f != nil && f.count >= l.max {
+		return f.reset.Sub(now)
+	}
+	if !failed {
 		return 0
 	}
-	return f.reset.Sub(now)
+	if f == nil {
+		l.evict(now)
+		f = &failures{reset: now.Add(l.window)}
+		l.hits[key] = f
+	}
+	f.count++
+	return 0
 }
 
-func (l *failureLimiter) fail(key string, now time.Time) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if !now.Before(l.sweep) {
+// evict drops expired entries once per window and makes room when full.
+func (l *failureLimiter) evict(now time.Time) {
+	if !now.Before(l.sweep) || len(l.hits) >= maxTrackedClients {
 		for k, f := range l.hits {
 			if !now.Before(f.reset) {
 				delete(l.hits, k)
@@ -57,40 +65,10 @@ func (l *failureLimiter) fail(key string, now time.Time) {
 		}
 		l.sweep = now.Add(l.window)
 	}
-	f := l.hits[key]
-	if f == nil || !now.Before(f.reset) {
-		if f == nil && len(l.hits) >= maxTrackedClients {
-			return
+	for k := range l.hits {
+		if len(l.hits) < maxTrackedClients {
+			break
 		}
-		f = &failures{reset: now.Add(l.window)}
-		l.hits[key] = f
-	}
-	f.count++
-}
-
-// limitFailures runs as route middleware, so Fiber's request-level error
-// pass (malformed requests, idle timeouts) never reaches it.
-func (s *Server) limitFailures(c fiber.Ctx) error {
-	key := clientKey(c.IP())
-	if wait := s.limiter.blockedFor(key, time.Now()); wait > 0 {
-		c.Set(fiber.HeaderRetryAfter, strconv.Itoa(int(math.Ceil(wait.Seconds()))))
-		return fiber.ErrTooManyRequests
-	}
-	err := c.Next()
-	if code := statusOf(c, err); code >= 400 && code < 500 {
-		s.limiter.fail(key, time.Now())
-	}
-	return err
-}
-
-func statusOf(c fiber.Ctx, err error) int {
-	var fe *fiber.Error
-	switch {
-	case err == nil:
-		return c.Response().StatusCode()
-	case errors.As(err, &fe):
-		return fe.Code
-	default:
-		return fiber.StatusInternalServerError
+		delete(l.hits, k)
 	}
 }

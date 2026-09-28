@@ -5,12 +5,15 @@ import (
 	"crypto/subtle"
 	"errors"
 	"io/fs"
+	"math"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"go.uber.org/zap"
@@ -26,7 +29,7 @@ func (s *Server) handle(c fiber.Ctx) error {
 		return fiber.ErrBadRequest
 	}
 	// Dotfiles and dot-directories (.git, .env, ...) are never served.
-	if strings.Contains(urlPath, "/.") {
+	if hidden(urlPath) {
 		return fiber.ErrForbidden
 	}
 
@@ -34,7 +37,7 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if err != nil {
 		return s.openError(err)
 	}
-	if !s.visible(rootName(urlPath)) {
+	if !s.visible(rootName(urlPath), f) {
 		_ = f.Close()
 		return fiber.ErrNotFound
 	}
@@ -51,14 +54,18 @@ func (s *Server) handle(c fiber.Ctx) error {
 	case !info.Mode().IsRegular():
 		_ = f.Close()
 		return fiber.ErrNotFound
-	case !s.authorized(c):
-		_ = f.Close()
-		c.Set(fiber.HeaderCacheControl, "no-store")
-		c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
-		return c.Status(fiber.StatusForbidden).SendString(deniedBody)
-	default:
-		return s.serveFile(c, f, info, path.Base(urlPath))
 	}
+	if ok, err := s.authorize(c); !ok {
+		_ = f.Close()
+		return err
+	}
+	return s.serveFile(c, f, info, path.Base(urlPath))
+}
+
+// hidden reports whether any segment of the slash-separated path p starts
+// with a dot.
+func hidden(p string) bool {
+	return strings.Contains("/"+p, "/.")
 }
 
 // cleanPath decodes the raw request path into a clean, absolute URL path and
@@ -87,20 +94,28 @@ func rootName(urlPath string) string {
 	return "."
 }
 
-// visible reports whether name resolves, through any symlinks, to a path
-// in the root without dot components. os.Root already guarantees
-// containment; this extends the dotfile rule to symlink targets.
-func (s *Server) visible(name string) bool {
-	real, err := filepath.EvalSymlinks(filepath.Join(s.rootPath, filepath.FromSlash(name)))
-	if err != nil {
-		return false
+// visible reports whether name (relative to the root) lives at a path
+// without dot segments, following symlinks. os.Root already guarantees
+// containment; this extends the dotfile rule to symlink targets. For an
+// opened file f the check uses the file's own path where the OS exposes it,
+// which cannot race with symlink swaps.
+func (s *Server) visible(name string, f *os.File) bool {
+	real, ok := "", false
+	if f != nil {
+		real, ok = fdPath(f)
+	}
+	if !ok {
+		var err error
+		if real, err = filepath.EvalSymlinks(filepath.Join(s.rootPath, filepath.FromSlash(name))); err != nil {
+			return false
+		}
 	}
 	rel, err := filepath.Rel(s.rootPath, real)
 	if err != nil {
 		return false
 	}
 	rel = filepath.ToSlash(rel)
-	return rel == "." || !strings.Contains("/"+rel, "/.")
+	return rel == "." || !hidden(rel)
 }
 
 func (s *Server) openError(err error) error {
@@ -119,21 +134,36 @@ func (s *Server) openError(err error) error {
 	}
 }
 
-// authorized compares SHA-256 digests in constant time so neither the key
-// nor its length leaks through timing.
-func (s *Server) authorized(c fiber.Ctx) bool {
+// authorize checks the access key, comparing SHA-256 digests in constant
+// time so neither the key nor its length leaks through timing. Wrong keys
+// count against the client's budget; once it is spent, attempts are
+// refused without revealing whether the key was right.
+func (s *Server) authorize(c fiber.Ctx) (bool, error) {
 	key := c.Query(s.cfg.Query)
-	reason := "missing key"
+	valid := false
 	if key != "" {
 		sum := sha256.Sum256([]byte(key))
-		if subtle.ConstantTimeCompare(sum[:], s.keyHash[:]) == 1 {
-			return true
+		valid = subtle.ConstantTimeCompare(sum[:], s.keyHash[:]) == 1
+	}
+	if s.limiter != nil && key != "" {
+		if wait := s.limiter.attempt(clientKey(c.IP()), !valid, time.Now()); wait > 0 {
+			c.Set(fiber.HeaderRetryAfter, strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+			return false, fiber.ErrTooManyRequests
 		}
+	}
+	if valid {
+		return true, nil
+	}
+
+	reason := "missing key"
+	if key != "" {
 		reason = "invalid key"
 	}
 	s.log.Warn("access denied",
 		zap.String("reason", reason),
 		zap.String("ip", c.IP()),
 		zap.String("path", c.Path()))
-	return false
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
+	return false, c.Status(fiber.StatusForbidden).SendString(deniedBody)
 }

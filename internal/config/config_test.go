@@ -86,7 +86,7 @@ func TestLoadConfigFile(t *testing.T) {
 	clearEnv(t)
 	dir := t.TempDir()
 	file := filepath.Join(dir, "goftp.yaml")
-	content := "dir: " + dir + "\nsecure_key: " + validKey + "\nlog:\n  format: console\nserver:\n  idle_timeout: 30s\n"
+	content := "dir: " + dir + "\nsecure_key: " + validKey + "\nlog:\n  format: console\nserver:\n  idle_timeout: 30s\n  read_timeout: 500ms\n"
 	if err := os.WriteFile(file, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestLoadConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Dir != dir || cfg.SecureKey != validKey || cfg.Server.IdleTimeout != 30*time.Second {
+	if cfg.Dir != dir || cfg.SecureKey != validKey || cfg.Server.IdleTimeout != 30*time.Second || cfg.Server.ReadTimeout != 500*time.Millisecond {
 		t.Errorf("config file not applied: %+v", cfg)
 	}
 	if cfg.Log.Format != "json" {
@@ -128,8 +128,9 @@ func TestLoadErrors(t *testing.T) {
 		{"proxy without trust", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_PROXY_HEADER": "X-Real-IP"}, nil, "requires server.trusted_proxies"},
 		{"bad proxy", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_TRUSTED_PROXIES": "nope"}, nil, "invalid IP or CIDR"},
 		{"half tls", map[string]string{"SECURE_KEY": validKey, "GOFTP_TLS_CERT_FILE": "cert.pem"}, nil, "must be set together"},
-		{"zero timeout", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_READ_TIMEOUT": "0s"}, nil, "at least 1s"},
-		{"unitless timeout", map[string]string{"SECURE_KEY": validKey}, []string{"--config", unitless}, "at least 1s"},
+		{"zero timeout", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_READ_TIMEOUT": "0s"}, nil, "must be positive"},
+		{"unitless timeout", map[string]string{"SECURE_KEY": validKey}, []string{"--config", unitless}, "needs a unit"},
+		{"unitless env timeout", map[string]string{"SECURE_KEY": validKey, "GOFTP_SERVER_IDLE_TIMEOUT": "30"}, nil, "missing unit"},
 		{"negative limiter", map[string]string{"SECURE_KEY": validKey, "GOFTP_LIMITER_MAX_FAILURES": "-1"}, nil, "must not be negative"},
 		{"short window", map[string]string{"SECURE_KEY": validKey, "GOFTP_LIMITER_WINDOW": "500ms"}, nil, "at least 1s"},
 		{"positional arg", map[string]string{"SECURE_KEY": validKey}, []string{"extra"}, "unexpected arguments"},

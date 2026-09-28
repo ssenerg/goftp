@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 )
@@ -92,13 +94,27 @@ func Load(args []string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := v.UnmarshalExact(&cfg); err != nil {
+	hooks := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
+		rejectUnitlessDuration,
+		mapstructure.StringToTimeDurationHookFunc(),
+		mapstructure.StringToSliceHookFunc(","),
+	))
+	if err := v.UnmarshalExact(&cfg, hooks); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
 	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// rejectUnitlessDuration refuses bare numbers such as "timeout: 30", which
+// would otherwise decode as nanoseconds.
+func rejectUnitlessDuration(from, to reflect.Type, data any) (any, error) {
+	if to == reflect.TypeFor[time.Duration]() && from != to && from.Kind() != reflect.String {
+		return nil, fmt.Errorf("duration %v needs a unit, e.g. \"30s\"", data)
+	}
+	return data, nil
 }
 
 func setDefaults(v *viper.Viper) {
@@ -141,9 +157,8 @@ func (c *Config) normalize() error {
 	}
 
 	s := &c.Server
-	// Also catches unitless numbers, which decode as nanoseconds.
-	if min(s.ReadTimeout, s.WriteTimeout, s.IdleTimeout, s.ShutdownTimeout) < time.Second {
-		errs = append(errs, errors.New("server timeouts must be at least 1s (use units, e.g. 30s)"))
+	if min(s.ReadTimeout, s.WriteTimeout, s.IdleTimeout, s.ShutdownTimeout) <= 0 {
+		errs = append(errs, errors.New("server timeouts must be positive"))
 	}
 	s.ProxyHeader = strings.TrimSpace(s.ProxyHeader)
 	proxies := s.TrustedProxies[:0]

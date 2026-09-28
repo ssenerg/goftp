@@ -20,7 +20,7 @@ import (
 )
 
 // readBufferSize bounds the request line plus headers; percent-encoded
-// non-ASCII paths are long.
+// non-ASCII paths are long. Idle connections release it (ReduceMemoryUsage).
 const readBufferSize = 16 << 10
 
 const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
@@ -61,6 +61,7 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 		WriteTimeout:       cfg.Server.WriteTimeout,
 		IdleTimeout:        cfg.Server.IdleTimeout,
 		ReadBufferSize:     readBufferSize,
+		ReduceMemoryUsage:  true,
 		GETOnly:            true,
 		CaseSensitive:      true,
 		StrictRouting:      true,
@@ -74,20 +75,22 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	if cfg.TLS.CertFile != "" {
 		hsts = 365 * 24 * 60 * 60
 	}
+	panics := recover.Config{EnableStackTrace: true, StackTraceHandler: s.logPanic}
+	// The outer recover guards the logger; the inner one turns handler
+	// panics into logged 500s.
+	s.app.Use(recover.New(panics))
 	s.app.Use(s.logRequests)
-	s.app.Use(recover.New(recover.Config{EnableStackTrace: true, StackTraceHandler: s.logPanic}))
+	s.app.Use(recover.New(panics))
 	s.app.Use(helmet.New(helmet.Config{
 		XFrameOptions:         "DENY",
 		ContentSecurityPolicy: contentSecurityPolicy,
 		HSTSMaxAge:            hsts,
 		HSTSExcludeSubdomains: true,
 	}))
-	handlers := []any{s.handle}
 	if cfg.Limiter.MaxFailures > 0 {
 		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
-		handlers = append([]any{s.limitFailures}, handlers...)
 	}
-	s.app.Get("/*", handlers[0], handlers[1:]...)
+	s.app.Get("/*", s.handle)
 	return s, nil
 }
 
@@ -123,7 +126,7 @@ func (s *Server) Listen(ctx context.Context) error {
 	_ = ln.Close()
 	<-served
 	if errors.Is(err, context.DeadlineExceeded) {
-		s.log.Warn("shutdown timed out, dropping remaining connections")
+		s.log.Warn("shutdown timed out, in-flight requests will be cut off")
 		return nil
 	}
 	return err

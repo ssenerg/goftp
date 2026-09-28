@@ -496,23 +496,12 @@ func TestLimiter(t *testing.T) {
 	})
 	f.write(t, "a.txt", "a")
 
-	// Concurrent successful requests must never count as failures.
-	var wg sync.WaitGroup
-	for i := 0; i < 40; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			req := httptest.NewRequest("GET", keyed("/a.txt"), nil)
-			resp, err := f.srv.App().Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
-			if err != nil || resp.StatusCode != 200 {
-				t.Errorf("concurrent request: %v %v", err, resp)
-			}
-		}()
-	}
-	wg.Wait()
-
-	// Request-level errors (here: 405) are not credential guesses.
+	// Only wrong keys count: successes, missing keys and other errors don't.
 	for i := 0; i < 5; i++ {
+		for target, want := range map[string]int{keyed("/a.txt"): 200, "/a.txt": 403, "/nope": 404} {
+			resp, _ := f.do(t, "GET", target)
+			expectStatus(t, resp, want)
+		}
 		resp, _ := f.do(t, "POST", "/a.txt")
 		expectStatus(t, resp, 405)
 	}
@@ -520,33 +509,85 @@ func TestLimiter(t *testing.T) {
 		resp, _ := f.do(t, "GET", "/a.txt?key=guess"+strconv.Itoa(i))
 		expectStatus(t, resp, 403)
 	}
+	// The budget is spent: even the right key is refused without being checked.
 	resp, body := f.do(t, "GET", keyed("/a.txt"))
 	expectStatus(t, resp, http.StatusTooManyRequests)
 	if ra, err := strconv.Atoi(resp.Header.Get("Retry-After")); err != nil || ra < 59 || ra > 60 || body != "Too Many Requests" {
 		t.Errorf("429 response: Retry-After %q, body %q", resp.Header.Get("Retry-After"), body)
+	}
+	// Listings stay public.
+	resp, _ = f.do(t, "GET", "/")
+	expectStatus(t, resp, 200)
+}
+
+// Concurrent guesses must not slip past the budget.
+func TestLimiterConcurrentGuesses(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) {
+		c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute}
+	})
+	f.write(t, "a.txt", "a")
+
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		counts = map[int]int{}
+	)
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("GET", "/a.txt?key=guess"+strconv.Itoa(i), nil)
+			resp, err := f.srv.App().Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			mu.Lock()
+			counts[resp.StatusCode]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if counts[403] != 3 || counts[429] != 97 {
+		t.Errorf("status counts %v, want 3×403 and 97×429", counts)
 	}
 }
 
 func TestFailureLimiterWindow(t *testing.T) {
 	l := newFailureLimiter(2, time.Minute)
 	now := time.Unix(1000, 0)
-	l.fail("a", now)
-	if l.blockedFor("a", now) != 0 {
+	if l.attempt("a", true, now) != 0 || l.attempt("a", false, now) != 0 {
 		t.Fatal("blocked below the limit")
 	}
-	l.fail("a", now.Add(time.Second))
-	if got := l.blockedFor("a", now.Add(2*time.Second)); got != 58*time.Second {
-		t.Fatalf("blockedFor = %v, want 58s", got)
+	if l.attempt("a", true, now.Add(time.Second)) != 0 {
+		t.Fatal("the last allowed failure was blocked")
 	}
-	if l.blockedFor("b", now) != 0 {
+	if got := l.attempt("a", false, now.Add(2*time.Second)); got != 58*time.Second {
+		t.Fatalf("blocked for %v, want 58s", got)
+	}
+	if l.attempt("b", false, now) != 0 {
 		t.Fatal("unrelated client blocked")
 	}
-	if l.blockedFor("a", now.Add(time.Minute)) != 0 {
+	if l.attempt("a", false, now.Add(time.Minute)) != 0 {
 		t.Fatal("block outlived the window")
 	}
-	l.fail("c", now.Add(2*time.Minute))
+	l.attempt("c", true, now.Add(2*time.Minute))
 	if _, ok := l.hits["a"]; ok {
 		t.Error("expired entries are not swept")
+	}
+}
+
+func TestFailureLimiterBounded(t *testing.T) {
+	l := newFailureLimiter(1, time.Minute)
+	now := time.Unix(1000, 0)
+	for i := 0; i < maxTrackedClients+10; i++ {
+		l.attempt(strconv.Itoa(i), true, now)
+	}
+	if len(l.hits) > maxTrackedClients {
+		t.Fatalf("tracking %d clients", len(l.hits))
+	}
+	if l.attempt(strconv.Itoa(maxTrackedClients+9), false, now) == 0 {
+		t.Error("newest client is not tracked")
 	}
 }
 

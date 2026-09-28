@@ -29,10 +29,10 @@ command lines are visible to other local users.
 
 - Serve over HTTPS (`tls.*` settings or a TLS-terminating proxy): the key
   travels in the URL.
-- Clients are blocked for a while after too many failed (4xx) requests
-  (`limiter.*`), which stops key guessing. Behind a reverse proxy, set
-  `server.proxy_header` and `server.trusted_proxies`, otherwise every client
-  shares the proxy's budget.
+- Wrong keys are rate limited per client (`limiter.*`): once the budget is
+  spent, further download attempts get 429 until the window ends. Behind a
+  reverse proxy, set `server.proxy_header` and `server.trusted_proxies`,
+  otherwise every client shares the proxy's budget.
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory and do not lead into a dotfile or dot-directory.
 

@@ -82,7 +82,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 // resolve inside the root.
 func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
 	name := e.Name()
-	if strings.HasPrefix(name, ".") {
+	if hidden(name) {
 		return listItem{}, false
 	}
 	var (
@@ -91,7 +91,7 @@ func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
 	)
 	if e.Type()&fs.ModeSymlink != 0 {
 		target := rootName(path.Join(dirPath, name))
-		if !s.visible(target) {
+		if !s.visible(target, nil) {
 			return listItem{}, false
 		}
 		info, err = s.root.Stat(target)

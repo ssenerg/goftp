@@ -37,11 +37,12 @@ func run(args []string) error {
 	}
 	defer func() { _ = log.Sync() }()
 
+	// srv is not closed: after a timed-out shutdown, requests may still be
+	// running until the process exits.
 	srv, err := server.New(cfg, log)
 	if err != nil {
 		return fmt.Errorf("serve %s: %w", cfg.Dir, err)
 	}
-	defer func() { _ = srv.Close() }()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
