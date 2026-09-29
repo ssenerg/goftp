@@ -14,7 +14,7 @@ import (
 	"goftp/internal/auth"
 )
 
-const badFolderName = "Folder names cannot be empty or very long, start with a dot, or contain / or \\."
+const badFolderName = "Folder names cannot be empty or very long, start with a dot, or contain /, \\ or control characters."
 
 // mkdir creates the folder named by the form field "folder" in the
 // directory at urlPath, e.g. curl -d folder=photos https://host/dir/

@@ -128,7 +128,8 @@ writing `<name>` and delete it afterwards (such locks are always honored;
 a locked folder is hidden with everything in it).
 A running upload refreshes its lock every 15 seconds; a lock left behind by
 a goftp that stopped (crash, restart) is taken over by the next upload of
-that name once it is a minute old.
+that name once it is a minute old, and removed with its temp file when
+goftp starts again.
 
 ## Security notes
 

@@ -130,6 +130,15 @@ func (s *Server) Listen(ctx context.Context) error {
 		zap.String("dir", s.cfg.Dir),
 		zap.Bool("tls", s.cfg.TLS.CertFile != ""))
 
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		if n := s.removeLeftovers(ctx); n > 0 {
+			s.log.Info("removed leftovers of interrupted uploads", zap.Int("files", n))
+		}
+	}()
+	defer func() { <-swept }()
+
 	served := make(chan error, 1)
 	go func() {
 		served <- s.app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})

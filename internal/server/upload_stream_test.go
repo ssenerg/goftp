@@ -316,3 +316,47 @@ func TestSlowFormTimesOut(t *testing.T) {
 		_ = conn.Close()
 	}
 }
+
+// Uploads cut off by a crash or a forced shutdown leave their lock and temp
+// file behind. Starting removes them, but nothing that may still be in use.
+func TestStartRemovesLeftovers(t *testing.T) {
+	f := newFixture(t)
+	old := time.Now().Add(-2 * lockExpiry)
+	stale := func(name, content string) {
+		f.write(t, name, content)
+		if err := os.Chtimes(filepath.Join(f.dir, filepath.FromSlash(name)), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part := func(id string) string { return tempPrefix + id + tempSuffix }
+	stale("sub/"+lockName("crashed.iso"), lockMagic+part("A")+"\n")
+	stale("sub/"+part("A"), "partial")
+	stale("sub/deeper/"+part("B"), "orphan")
+	f.write(t, "sub/"+lockName("running.iso"), lockMagic+part("C")+"\n")
+	stale("sub/"+part("C"), "still being written")
+	f.write(t, "sub/"+part("D"), "just started")
+	stale("sub/"+lockName("other.txt"), "another tool's lock")
+	stale(".git/"+part("E"), "not ours to judge")
+	f.write(t, "sub/crashed.iso", "previous version")
+
+	addr, _ := startServer(t, f)
+	gone := []string{"sub/" + lockName("crashed.iso"), "sub/" + part("A"), "sub/deeper/" + part("B")}
+	waitFor(t, "leftovers removed", func() bool {
+		for _, name := range gone {
+			if exists(filepath.Join(f.dir, filepath.FromSlash(name))) {
+				return false
+			}
+		}
+		return true
+	})
+	for _, name := range []string{"sub/" + lockName("running.iso"), "sub/" + part("C"), "sub/" + part("D"), "sub/" + lockName("other.txt"), ".git/" + part("E"), "sub/crashed.iso"} {
+		if !exists(filepath.Join(f.dir, filepath.FromSlash(name))) {
+			t.Errorf("%s removed", name)
+		}
+	}
+	if resp, err := http.Get("http://" + addr + "/"); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+}

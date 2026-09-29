@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
@@ -292,6 +293,13 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil && !rights.create {
+		// Replacing is all the visitor may do, so the file has to still
+		// be there.
+		if _, lerr := dir.Lstat(name); lerr != nil {
+			err = fiber.ErrForbidden
+		}
+	}
 	if err == nil {
 		err = commit(dir, tmp, name, replace && rights.replace)
 	}
@@ -351,11 +359,18 @@ func validName(name string) bool {
 		bad += `:*?"<>|`
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(bad, r) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) || bidiControl(r) || strings.ContainsRune(bad, r) {
 			return false
 		}
 	}
 	return true
+}
+
+// bidiControl reports whether r reorders the text around it, which lets a
+// name pass for another: "invoice\u202efdp.exe" shows as "invoiceexe.pdf".
+// Joiners and direction marks, which cannot, are fine.
+func bidiControl(r rune) bool {
+	return (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069')
 }
 
 func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool) {

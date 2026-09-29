@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v3"
+
 	"goftp/internal/auth"
 	"goftp/internal/config"
 )
@@ -400,5 +402,64 @@ func TestFormUploadWithoutRightsRevealsNothing(t *testing.T) {
 	}
 	if l := leftovers(f.dir); len(l) > 0 {
 		t.Errorf("leftover files: %v", l)
+	}
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// A user who may only replace files cannot create one by having it removed
+// while the upload runs.
+func TestReplaceOnlyCannotCreate(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "doc.txt", "old")
+	dir, _, err := f.srv.uploadDir("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dir.Close()
+	body := io.MultiReader(strings.NewReader("new"), readerFunc(func([]byte) (int, error) {
+		if err := os.Remove(filepath.Join(f.dir, "doc.txt")); err != nil {
+			t.Error(err)
+		}
+		return 0, io.EOF
+	}))
+	if _, _, err := f.srv.receive(dir, "doc.txt", body, true, uploadRights{replace: true}); !errors.Is(err, fiber.ErrForbidden) {
+		t.Errorf("error %v, want 403", err)
+	}
+	if exists(filepath.Join(f.dir, "doc.txt")) {
+		t.Error("file created")
+	}
+	if l := leftovers(f.dir); len(l) > 0 {
+		t.Errorf("leftover files: %v", l)
+	}
+}
+
+func TestValidName(t *testing.T) {
+	for name, want := range map[string]bool{
+		"report.pdf":             true,
+		"Holiday 2026":           true,
+		"رسید.pdf":               true,
+		"می‌خواهم.txt":           true, // zero-width non-joiner, common in Persian
+		"👨‍👩‍👧.png":              true, // zero-width joiners
+		"":                       false,
+		".env":                   false,
+		"a/b":                    false,
+		`a\b`:                    false,
+		"a\x00b":                 false,
+		"a\nb":                   false,
+		"a\x7fb":                 false,
+		"a\u0085b":               false, // C1 control
+		"a b":                    false, // line separator
+		"invoice‮fdp.exe":        false, // right-to-left override: shows as "invoiceexe.pdf"
+		"invoice⁧fdp.exe":        false, // right-to-left isolate
+		strings.Repeat("x", 249): true,
+		strings.Repeat("x", 250): false, // its lock file name would be too long
+		"\xff":                   false,
+	} {
+		if got := validName(name); got != want {
+			t.Errorf("validName(%q) = %v, want %v", name, got, want)
+		}
 	}
 }
