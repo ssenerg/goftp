@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"io/fs"
 	"mime/multipart"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"goftp/internal/config"
 )
@@ -160,8 +162,11 @@ func TestFormUpload(t *testing.T) {
 	f := newFixture(t, withUploads)
 	f.write(t, "sub/keep.txt", "k")
 
-	_, body := f.do(t, "GET", "/sub/")
-	for _, want := range []string{`<form class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="key"`, `name="file"`} {
+	resp, body := f.do(t, "GET", "/sub/")
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.HasSuffix(csp, "form-action 'self'") {
+		t.Errorf("CSP %q", csp)
+	}
+	for _, want := range []string{`<form class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="key"`, `name="replace"`, `name="file"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("listing lacks %s", want)
 		}
@@ -172,7 +177,7 @@ func TestFormUpload(t *testing.T) {
 		formPart{field: "file", filename: "a.txt", content: "alpha"},
 		formPart{field: "file", filename: "../../b.txt", content: "beta"},
 	)
-	resp, _ := f.send(t, "POST", "/sub", form, "Content-Type", ctype)
+	resp, _ = f.send(t, "POST", "/sub", form, "Content-Type", ctype)
 	expectStatus(t, resp, http.StatusSeeOther)
 	if got := resp.Header.Get("Location"); got != "/sub/" {
 		t.Errorf("Location %q", got)
@@ -206,6 +211,29 @@ func TestFormUpload(t *testing.T) {
 	}
 	resp, _ = f.send(t, "POST", "/sub/", strings.NewReader("x=1"), "Content-Type", "application/x-www-form-urlencoded")
 	expectStatus(t, resp, http.StatusUnsupportedMediaType)
+
+	// Existing files are kept unless replace is checked; the reply names
+	// the files stored before the failure.
+	form, ctype = multipartForm(t,
+		formPart{field: "key", content: uploadKey},
+		formPart{field: "file", filename: "d.txt", content: "delta"},
+		formPart{field: "file", filename: "a.txt", content: "changed"},
+	)
+	resp, body = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
+	expectStatus(t, resp, http.StatusConflict)
+	if body != "Conflict\nStored before the error: d.txt\n" || readFile(t, f.dir, "sub/a.txt") != "alpha" {
+		t.Errorf("no-replace upload: %q, a.txt=%q", body, readFile(t, f.dir, "sub/a.txt"))
+	}
+	form, ctype = multipartForm(t,
+		formPart{field: "key", content: uploadKey},
+		formPart{field: "replace", content: "1"},
+		formPart{field: "file", filename: "a.txt", content: "changed"},
+	)
+	resp, _ = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
+	expectStatus(t, resp, http.StatusSeeOther)
+	if readFile(t, f.dir, "sub/a.txt") != "changed" {
+		t.Error("replace did not replace")
+	}
 	if l := leftovers(f.dir); len(l) > 0 {
 		t.Errorf("leftover files: %v", l)
 	}
@@ -213,11 +241,21 @@ func TestFormUpload(t *testing.T) {
 
 func TestLockFiles(t *testing.T) {
 	f := newFixture(t, withUploads)
-	// Left behind by an earlier goftp process: ignored and cleaned up.
+	past := time.Now().Add(-2 * time.Hour)
+	// Abandoned by a crashed goftp: taken over by the next upload.
 	f.write(t, "stale.txt", "old")
-	f.write(t, ".stale.txt.lock", lockMagic+"EARLIERPROCESS .goftp-STALE.part\n")
+	f.write(t, ".stale.txt.lock", lockMagic+".goftp-STALE.part\n")
 	f.write(t, ".goftp-STALE.part", "partial")
-	// Written by another tool: honored.
+	for _, name := range []string{".stale.txt.lock", ".goftp-STALE.part"} {
+		if err := os.Chtimes(filepath.Join(f.dir, name), past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Still running in another goftp process, e.g. during a restart.
+	f.write(t, "live.txt", "old")
+	f.write(t, ".live.txt.lock", lockMagic+".goftp-LIVE.part\n")
+	f.write(t, ".goftp-LIVE.part", "partial")
+	// Written by another tool: hides the file.
 	f.write(t, "busy.txt", "partial")
 	f.write(t, ".busy.txt.lock", "rsync\n")
 	f.write(t, "busydir/x", "x")
@@ -225,41 +263,85 @@ func TestLockFiles(t *testing.T) {
 	// A crafted lock must not make goftp delete other files.
 	f.write(t, "victim.txt", "keep")
 	f.write(t, "evil.txt", "old")
-	f.write(t, ".evil.txt.lock", lockMagic+"EARLIERPROCESS ../victim.txt\n")
+	f.write(t, ".evil.txt.lock", lockMagic+"../victim.txt\n")
 
 	_, body := f.do(t, "GET", "/")
-	if !strings.Contains(body, `href="/stale.txt"`) {
-		t.Error("stale goftp lock hides its file")
+	for _, name := range []string{"stale.txt", "live.txt"} {
+		if !strings.Contains(body, `href="/`+name+`"`) {
+			t.Errorf("goftp lock hides %s", name)
+		}
 	}
 	for _, name := range []string{"busy.txt", "busydir", "evil.txt"} {
 		if strings.Contains(body, name) {
 			t.Errorf("locked %s is listed", name)
 		}
 	}
-	for target, want := range map[string]int{keyed("/busy.txt"): 404, "/busydir/": 404, keyed("/stale.txt"): 200} {
+	for target, want := range map[string]int{keyed("/busy.txt"): 404, "/busydir/": 404, keyed("/live.txt"): 200} {
 		if resp, _ := f.do(t, "GET", target); resp.StatusCode != want {
 			t.Errorf("GET %s: status %d, want %d", target, resp.StatusCode, want)
 		}
 	}
 
-	for target, want := range map[string]int{"/busy.txt": 409, "/evil.txt": 409, "/stale.txt": 204} {
+	for target, want := range map[string]int{"/busy.txt": 409, "/evil.txt": 409, "/live.txt": 409, "/stale.txt": 204} {
 		if resp, _ := f.send(t, "PUT", upKeyed(target), strings.NewReader("new")); resp.StatusCode != want {
 			t.Errorf("PUT %s: status %d, want %d", target, resp.StatusCode, want)
 		}
 	}
-	if readFile(t, f.dir, "stale.txt") != "new" || readFile(t, f.dir, "victim.txt") != "keep" || readFile(t, f.dir, "busy.txt") != "partial" {
-		t.Error("unexpected file contents after uploads")
+	for name, want := range map[string]string{"stale.txt": "new", "live.txt": "old", "victim.txt": "keep", "busy.txt": "partial", ".goftp-LIVE.part": "partial"} {
+		if got := readFile(t, f.dir, name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
 	}
 	for _, gone := range []string{".stale.txt.lock", ".goftp-STALE.part"} {
-		if _, err := os.Stat(filepath.Join(f.dir, gone)); err == nil {
+		if exists(filepath.Join(f.dir, gone)) {
 			t.Errorf("stale %s not cleaned up", gone)
 		}
 	}
 }
 
+// "Only if absent" must hold even against writers that ignore lock files.
+func TestCommitWithoutReplaceIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	for name, content := range map[string]string{".goftp-T.part": "new", "f.txt": "written meanwhile"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := commit(root, ".goftp-T.part", "f.txt", false); !errors.Is(err, errExists) {
+		t.Fatalf("commit = %v, want errExists", err)
+	}
+	if got := readFile(t, dir, "f.txt"); got != "written meanwhile" {
+		t.Errorf("existing file replaced: %q", got)
+	}
+	if err := commit(root, ".goftp-T.part", "g.txt", false); err != nil || readFile(t, dir, "g.txt") != "new" {
+		t.Errorf("commit to a free name: %v", err)
+	}
+}
+
+// With uploads on, bodyless requests must keep their connection alive.
+func TestKeepAliveWithUploads(t *testing.T) {
+	f := newFixture(t, withUploads)
+	f.write(t, "a.txt", "a")
+	for _, target := range []string{"/", keyed("/a.txt")} {
+		for _, method := range []string{"GET", "HEAD"} {
+			if resp, _ := f.do(t, method, target); resp.Close {
+				t.Errorf("%s %s closes the connection", method, target)
+			}
+		}
+	}
+	if resp, _ := f.send(t, "PUT", upKeyed("/b.txt"), strings.NewReader("b")); resp.StatusCode != 201 || resp.Close {
+		t.Errorf("completed upload: status %d, close %v", resp.StatusCode, resp.Close)
+	}
+}
+
 func TestUploadKeyLimiter(t *testing.T) {
 	f := newFixture(t, withUploads, func(c *config.Config) {
-		c.Limiter = config.LimiterConfig{MaxFailures: 2, Window: 60e9}
+		c.Limiter = config.LimiterConfig{MaxFailures: 2, Window: time.Minute}
 	})
 	for i := 0; i < 2; i++ {
 		resp, _ := f.send(t, "PUT", "/a.txt?key=guess", strings.NewReader("x"))

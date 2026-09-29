@@ -34,19 +34,22 @@ never grant write access:
 export GOFTP_UPLOAD_ENABLED=true GOFTP_UPLOAD_KEY="$(openssl rand -hex 24)"
 ```
 
-- Browser: listing pages show an upload form (upload key and files).
+- Browser: listing pages show an upload form. Existing files are only
+  replaced when "Replace existing" is checked.
 - curl: `curl -T file.iso -H "Authorization: Bearer $GOFTP_UPLOAD_KEY" https://host/dir/`
-  (or pass `?key=` in the URL, naming the file). Add `-H "If-None-Match: *"` to
-  never replace an existing file.
+  (or pass `?key=` in the URL, naming the file). PUT replaces existing files
+  unless `-H "If-None-Match: *"` is given, and needs a Content-Length.
 
-The target directory must exist, and `upload.max_size` caps each file. While
-a file is uploading, the lock file `.<name>.lock` hides it from listings and
-downloads, and the data goes to a hidden `.goftp-*.part` file that is renamed
-into place only once complete, so partial uploads are never visible. Other
-tools can use the same convention: create `.<name>.lock` before writing
-`<name>` and remove it afterwards. A crash can leave `.goftp-*.part` files
-behind; they are safe to delete, and their locks are ignored and replaced by
-the next upload of that name. Run one goftp instance per directory.
+The target directory must exist, and `upload.max_size` caps each file.
+
+Partial uploads are never listed or served. While `<name>` is uploaded, the
+lock file `.<name>.lock` keeps other uploads of it out, and the data goes to
+a hidden `.goftp-*.part` file that is renamed into place only once complete;
+until then the previous version, if any, stays available. Other tools can
+hide files they write in place the same way: create `.<name>.lock` before
+writing `<name>` and delete it afterwards (such locks are always honored).
+Locks of goftp uploads that stopped making progress (crash, restart) are
+taken over by the next upload of that name.
 
 ## Security notes
 

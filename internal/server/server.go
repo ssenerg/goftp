@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"errors"
@@ -26,7 +25,7 @@ import (
 const readBufferSize = 16 << 10
 
 const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+	"base-uri 'none'; frame-ancestors 'none'; form-action "
 
 type Server struct {
 	cfg           *config.Config
@@ -39,9 +38,7 @@ type Server struct {
 	uploadKeyHash [sha256.Size]byte
 	errEscape     error
 	allow         string
-	// instance identifies this process in upload lock files.
-	instance string
-	lockMu   sync.Mutex
+	lockMu        sync.Mutex
 }
 
 func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
@@ -61,7 +58,6 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 		keyHash:   sha256.Sum256([]byte(cfg.SecureKey)),
 		errEscape: escapeError(root),
 		allow:     "GET, HEAD",
-		instance:  rand.Text(),
 	}
 	uploads := cfg.Upload.Enabled
 	if uploads {
@@ -92,6 +88,10 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	if cfg.TLS.CertFile != "" {
 		hsts = 365 * 24 * 60 * 60
 	}
+	formAction := "'none'"
+	if uploads {
+		formAction = "'self'"
+	}
 	panics := recover.Config{EnableStackTrace: true, StackTraceHandler: s.logPanic}
 	// The outer recover guards the logger; the inner one turns handler
 	// panics into logged 500s.
@@ -100,20 +100,19 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	s.app.Use(recover.New(panics))
 	s.app.Use(helmet.New(helmet.Config{
 		XFrameOptions:         "DENY",
-		ContentSecurityPolicy: contentSecurityPolicy,
+		ContentSecurityPolicy: contentSecurityPolicy + formAction,
 		HSTSMaxAge:            hsts,
 		HSTSExcludeSubdomains: true,
 	}))
 	if cfg.Limiter.MaxFailures > 0 {
 		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
-	if uploads {
-		s.app.Use(closeUnreadBody)
-	}
 	s.app.Get("/*", s.handle)
 	if uploads {
 		s.app.Put("/*", s.put)
 		s.app.Post("/*", s.postForm)
+		srv := s.app.Server()
+		srv.Handler = closeUnreadBody(srv.Handler)
 	}
 	return s, nil
 }

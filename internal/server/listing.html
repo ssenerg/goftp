@@ -91,6 +91,8 @@
     padding: 0.4rem 0.6rem;
   }
   .upload input[type=file] { flex: 1; min-width: 12rem; }
+  .upload label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text-dim); }
+  .upload label input { padding: 0; }
   .upload button { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
   .upload button:hover { background: var(--accent-hover); }
   .parent-link { display: inline-flex; align-items: center; gap: 0.3rem; margin-bottom: 0.75rem; }
@@ -125,6 +127,7 @@
   {{with .Upload}}
   <form class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
     <input type="password" name="{{.KeyField}}" placeholder="Upload key" autocomplete="current-password" required>
+    <label><input type="checkbox" name="replace" value="1"> Replace existing</label>
     <input type="file" name="file" multiple required>
     <button type="submit">Upload</button>
   </form>

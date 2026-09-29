@@ -222,7 +222,8 @@ func TestUnreadBodyClosesConnection(t *testing.T) {
 	// fasthttp buffers the first 8 KiB of a body before calling the handler.
 	body := strings.Repeat("A", 8<<10) + smuggled
 
-	for _, method := range []string{"PUT", "POST", "GET"} {
+	// PROPFIND is answered by Fiber before any middleware runs.
+	for _, method := range []string{"PUT", "POST", "GET", "DELETE", "PROPFIND"} {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)

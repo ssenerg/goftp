@@ -202,7 +202,7 @@ func TestSecurityHeaders(t *testing.T) {
 		"X-Content-Type-Options":  "nosniff",
 		"X-Frame-Options":         "DENY",
 		"Referrer-Policy":         "no-referrer",
-		"Content-Security-Policy": contentSecurityPolicy,
+		"Content-Security-Policy": contentSecurityPolicy + "'none'",
 	}
 	for k, v := range want {
 		if got := resp.Header.Get(k); got != v {

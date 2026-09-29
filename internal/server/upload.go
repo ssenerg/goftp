@@ -9,6 +9,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 )
 
@@ -60,8 +62,11 @@ func (s *Server) put(c fiber.Ctx) error {
 
 	body := s.requestBody(c)
 	created, size, err := s.receive(dir, name, body, c.Get(fiber.HeaderIfNoneMatch) != "*")
+	if errors.Is(err, errExists) {
+		return fiber.ErrPreconditionFailed
+	}
 	if err != nil {
-		return uploadError(body, err)
+		return s.uploadError(body, err)
 	}
 	s.logUpload(c, urlPath, size, created)
 	s.finishBody(c, body)
@@ -72,8 +77,9 @@ func (s *Server) put(c fiber.Ctx) error {
 }
 
 // postForm stores the files of a multipart/form-data upload (the listing
-// page's form) in the directory at the request path. The key field has to
-// come before the files.
+// page's form) in the directory at the request path. The key and replace
+// fields have to come before the files. Existing files are only replaced
+// when asked to.
 func (s *Server) postForm(c fiber.Ctx) error {
 	urlPath, _, err := cleanPath(c.Path())
 	if err != nil {
@@ -90,28 +96,33 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	body := s.requestBody(c)
 	form := multipart.NewReader(body, params["boundary"])
 	key := s.uploadKey(c)
-	var dir *os.Root
+	replace := false
+	var (
+		dir    *os.Root
+		stored []string
+	)
 	defer func() {
 		if dir != nil {
 			_ = dir.Close()
 		}
 	}()
-	stored := 0
 	for {
 		part, err := form.NextPart()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return uploadError(body, fiber.ErrBadRequest)
+			return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
 		}
 		switch name := part.FileName(); {
 		case part.FormName() == s.cfg.Query && name == "":
 			v, err := io.ReadAll(io.LimitReader(part, 1024))
 			if err != nil {
-				return uploadError(body, fiber.ErrBadRequest)
+				return s.uploadError(body, fiber.ErrBadRequest)
 			}
 			key = string(v)
+		case part.FormName() == "replace" && name == "":
+			replace = true
 		case part.FormName() == "file" && name != "":
 			if dir == nil {
 				if ok, err := s.authorize(c, key, &s.uploadKeyHash); !ok {
@@ -122,22 +133,42 @@ func (s *Server) postForm(c fiber.Ctx) error {
 				}
 			}
 			if !validName(name) {
-				return fiber.ErrBadRequest
+				return s.formError(c, stored, fiber.ErrBadRequest)
 			}
-			created, size, err := s.receive(dir, name, part, true)
+			created, size, err := s.receive(dir, name, part, replace)
+			if errors.Is(err, errExists) {
+				err = fiber.ErrConflict
+			}
 			if err != nil {
-				return uploadError(body, err)
+				return s.formError(c, stored, s.uploadError(body, err))
 			}
 			s.logUpload(c, path.Join(urlPath, name), size, created)
-			stored++
+			stored = append(stored, name)
 		}
 		_ = part.Close()
 	}
-	if stored == 0 {
+	if len(stored) == 0 {
 		return fiber.ErrBadRequest
 	}
 	s.finishBody(c, body)
 	return c.Redirect().Status(fiber.StatusSeeOther).To(escapePath(strings.TrimSuffix(urlPath, "/") + "/"))
+}
+
+// formError reports a failed form upload, naming the files that were
+// already stored before the failure.
+func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
+	if len(stored) == 0 {
+		return err
+	}
+	code := fiber.StatusInternalServerError
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		code = fe.Code
+	} else {
+		s.log.Error("request failed", zap.String("path", c.Path()), zap.Error(err))
+	}
+	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
+	return c.Status(code).SendString(http.StatusText(code) + "\nStored before the error: " + strings.Join(stored, ", ") + "\n")
 }
 
 // uploadKey takes the key from an "Authorization: Bearer" header, which
@@ -176,10 +207,12 @@ func (s *Server) uploadDir(urlPath string) (*os.Root, error) {
 	return nil, err
 }
 
+var errExists = errors.New("file exists")
+
 // receive stores body as name in dir. The data goes to a hidden temp file
-// that is renamed into place once complete; until then a lock file hides
-// the name from listings and downloads and keeps concurrent uploads of the
-// same name out.
+// that is renamed into place once complete, so partial data never appears
+// under the real name; the lock file keeps concurrent uploads out. Without
+// replace, an existing name yields errExists.
 func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool) (created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
 	if err := s.acquireLock(dir, name, tmp); err != nil {
@@ -190,14 +223,15 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 		_ = dir.Remove(lockName(name))
 	}()
 
+	created = true
 	switch info, err := dir.Lstat(name); {
 	case err == nil && info.IsDir():
 		return false, 0, fiber.ErrConflict
 	case err == nil && !replace:
-		return false, 0, fiber.ErrPreconditionFailed
-	case errors.Is(err, fs.ErrNotExist):
-		created = true
-	case err != nil:
+		return false, 0, errExists
+	case err == nil:
+		created = false
+	case !errors.Is(err, fs.ErrNotExist):
 		return false, 0, err
 	}
 
@@ -213,13 +247,32 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 		err = cerr
 	}
 	if err == nil {
-		err = dir.Rename(tmp, name)
+		err = commit(dir, tmp, name, replace)
 	}
 	if err != nil {
 		return false, size, err
 	}
 	syncDir(dir)
 	return created, size, nil
+}
+
+// commit moves a finished temp file into place. Without replace, a hard
+// link makes "only if absent" atomic even against writers that ignore lock
+// files; without hard link support it falls back to check-then-rename.
+func commit(dir *os.Root, tmp, name string, replace bool) error {
+	if !replace {
+		err := dir.Link(tmp, name)
+		switch {
+		case err == nil:
+			return nil
+		case errors.Is(err, fs.ErrExist):
+			return errExists
+		}
+		if _, err := dir.Lstat(name); err == nil {
+			return errExists
+		}
+	}
+	return dir.Rename(tmp, name)
 }
 
 func (s *Server) copyUpload(dst io.Writer, body io.Reader) (int64, error) {
@@ -268,7 +321,7 @@ func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool
 }
 
 // uploadError maps a failed upload to a response status.
-func uploadError(body *requestBody, err error) error {
+func (s *Server) uploadError(body *requestBody, err error) error {
 	var (
 		fe      *fiber.Error
 		timeout interface{ Timeout() bool }
@@ -283,7 +336,7 @@ func uploadError(body *requestBody, err error) error {
 	case errors.Is(err, syscall.ENOSPC):
 		return fiber.ErrInsufficientStorage
 	default:
-		return err
+		return s.openError(err)
 	}
 }
 
@@ -339,16 +392,20 @@ func (s *Server) finishBody(c fiber.Ctx, b *requestBody) {
 		_, _ = io.CopyN(io.Discard, b, 64<<10)
 	}
 	if b.eof {
-		c.Locals(bodyDoneKey, true)
+		c.RequestCtx().SetUserValue(bodyDoneKey, true)
 	}
 }
 
-// closeUnreadBody closes the connection after a request whose streamed body
-// was not fully read: fasthttp would parse the rest as the next request.
-func closeUnreadBody(c fiber.Ctx) error {
-	err := c.Next()
-	if c.Request().Header.ContentLength() != 0 && c.Locals(bodyDoneKey) == nil {
-		c.Response().SetConnectionClose()
+// closeUnreadBody wraps the fasthttp handler, so it also covers responses
+// Fiber sends outside the middleware chain. fasthttp does not drain a
+// streamed request body the handler left unread and would parse the rest
+// as the next request, so such connections are closed.
+func closeUnreadBody(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		next(ctx)
+		// ContentLength is -1 for chunked bodies, -2 when there is none.
+		if n := ctx.Request.Header.ContentLength(); (n > 0 || n == -1) && ctx.UserValue(bodyDoneKey) == nil {
+			ctx.SetConnectionClose()
+		}
 	}
-	return err
 }

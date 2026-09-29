@@ -8,13 +8,16 @@ import (
 	"path"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 )
 
-// While name is uploaded, the lock file .<name>.lock sits next to it. Any
-// lock hides the name from listings and downloads, so tools other than
-// goftp can use the same convention while writing files in place.
+// While name is uploaded, the lock file .<name>.lock sits next to it. goftp
+// writes the data to a hidden temp file and renames it into place, so its
+// own locks only keep concurrent uploads out. Locks from other tools hide
+// the name from listings and downloads, so such tools can write files in
+// place without exposing partial data.
 const (
 	lockSuffix = ".lock"
 	lockMagic  = "goftp-upload "
@@ -39,45 +42,34 @@ func validTemp(name string) bool {
 		len(name) <= 64 && !strings.ContainsAny(name, `/\`)
 }
 
-// readLock parses a lock file written by goftp: its owner (the process
-// instance) and the temp file of the upload. Other locks yield
-// errForeignLock.
-func readLock(r *os.Root, name string) (owner, tmp string, err error) {
+// readLock returns the temp file named in a goftp lock file. Other locks
+// yield errForeignLock.
+func readLock(r *os.Root, name string) (string, error) {
 	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	defer f.Close()
 	buf := make([]byte, 128)
 	n, _ := io.ReadFull(f, buf)
-	line, ok := strings.CutPrefix(string(buf[:n]), lockMagic)
-	if ok {
-		owner, tmp, ok = strings.Cut(strings.TrimSuffix(line, "\n"), " ")
+	tmp, ok := strings.CutPrefix(string(buf[:n]), lockMagic)
+	tmp, found := strings.CutSuffix(tmp, "\n")
+	if !ok || !found || !validTemp(tmp) {
+		return "", errForeignLock
 	}
-	if !ok || !validTemp(tmp) {
-		return "", "", errForeignLock
-	}
-	return owner, tmp, nil
+	return tmp, nil
 }
 
-// locked reports whether a lock file hides the entry name in dir (relative
-// to the root). Locks left behind by an earlier goftp process are ignored:
-// goftp never writes partial data under the final name.
+// locked reports whether a lock file from another tool hides the entry
+// name in dir (relative to the root).
 func (s *Server) locked(dir, name string) bool {
-	owner, _, err := readLock(s.root, path.Join(dir, lockName(name)))
-	switch {
-	case err == nil:
-		return owner == s.instance
-	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
-		return false
-	default:
-		return true
-	}
+	_, err := readLock(s.root, path.Join(dir, lockName(name)))
+	return err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
 }
 
 // acquireLock creates the lock file for uploading name into dir, recording
-// the temp file the upload writes to. A stale lock from an earlier goftp
-// process is taken over; any other existing lock means the name is busy.
+// the temp file the upload writes to. An abandoned goftp lock (crash,
+// restart) is taken over; any other existing lock means the name is busy.
 func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
@@ -85,7 +77,7 @@ func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
 	for range 2 {
 		f, err := dir.OpenFile(lock, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 		if err == nil {
-			_, err = f.WriteString(lockMagic + s.instance + " " + tmp + "\n")
+			_, err = f.WriteString(lockMagic + tmp + "\n")
 			if cerr := f.Close(); err == nil {
 				err = cerr
 			}
@@ -97,8 +89,8 @@ func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
 		if !errors.Is(err, fs.ErrExist) {
 			return err
 		}
-		owner, staleTmp, err := readLock(dir, lock)
-		if err != nil || owner == s.instance {
+		staleTmp, err := readLock(dir, lock)
+		if err != nil || !s.abandoned(dir, lock, staleTmp) {
 			return fiber.ErrConflict
 		}
 		_ = dir.Remove(staleTmp)
@@ -107,4 +99,18 @@ func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
 		}
 	}
 	return fiber.ErrConflict
+}
+
+// abandoned reports whether an upload has made no progress for a while. A
+// live upload writes to its temp file at least every read_timeout, even in
+// another goftp process such as the old one during a restart.
+func (s *Server) abandoned(dir *os.Root, lock, tmp string) bool {
+	cutoff := time.Now().Add(-max(2*s.cfg.Server.ReadTimeout, time.Minute))
+	for _, name := range []string{lock, tmp} {
+		info, err := dir.Lstat(name)
+		if err == nil && info.ModTime().After(cutoff) || err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false
+		}
+	}
+	return true
 }
