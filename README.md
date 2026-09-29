@@ -21,9 +21,13 @@ docker compose exec goftp goftp user add alice --role superadmin
 ```
 
 `user add` prints a temporary password. Open http://localhost:8080, sign in
-and choose a new password. Files live in the `files` volume, the database
-in `pgdata`; to serve a host directory instead, mount it at `/data` (and
-make it writable by UID 65532, the image's user, for uploads).
+and choose a new password. The database lives in the `pgdata` volume, the
+files in the `files` volume, unless `.env` names a directory to serve:
+
+```sh
+GOFTP_DATA=/mnt/storage/shared   # e.g. a disk, mounted before goftp starts
+GOFTP_RUN_AS=1000:1000           # its owner (see `id`), so uploads can write
+```
 
 The port is only published on 127.0.0.1: put a TLS-terminating reverse
 proxy in front and set `GOFTP_PROXY_HEADER` and `GOFTP_TRUSTED_PROXIES` in
