@@ -47,7 +47,8 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if err != nil {
 		return s.openError(err)
 	}
-	if !s.visible(rootName(urlPath), f) {
+	realPath, visible := s.resolve(rootName(urlPath), f)
+	if !visible {
 		_ = f.Close()
 		return fiber.ErrNotFound
 	}
@@ -56,18 +57,21 @@ func (s *Server) handle(c fiber.Ctx) error {
 		_ = f.Close()
 		return err
 	}
-	if ok, err := mayRead(info.IsDir()); err != nil || !ok {
+	// Denials look like missing entries from here on: they reveal neither
+	// the kind of entry (only the other kind may be read) nor where a
+	// symlink leads.
+	if ok, err := s.mayRead(c, urlPath, realPath, info.IsDir()); err != nil || !ok {
 		_ = f.Close()
 		if err != nil {
 			return err
 		}
-		return s.deny(c)
+		return fiber.ErrNotFound
 	}
 
 	switch {
 	case info.IsDir():
 		defer f.Close()
-		return s.serveDir(c, f, urlPath, wantDir)
+		return s.serveDir(c, f, urlPath, realPath, wantDir)
 	case !info.Mode().IsRegular():
 		_ = f.Close()
 		return fiber.ErrNotFound
@@ -107,12 +111,24 @@ func rootName(urlPath string) string {
 	return "."
 }
 
-// visible reports whether name (relative to the root) lives at a path
-// without dot segments, following symlinks. os.Root already guarantees
-// containment; this extends the dotfile rule to symlink targets. For an
-// opened file f the check uses the file's own path where the OS exposes it,
-// which cannot race with symlink swaps.
-func (s *Server) visible(name string, f *os.File) bool {
+// mayRead reports whether the visitor may read the entry at urlPath: a
+// symlink grants nothing its target's rules do not, so realPath (where
+// symlinks lead, see resolve) has to be readable as well.
+func (s *Server) mayRead(c fiber.Ctx, urlPath, realPath string, dir bool) (bool, error) {
+	ok, err := s.allowed(c, object(urlPath, dir), auth.ActRead)
+	if err != nil || !ok || realPath == urlPath {
+		return ok, err
+	}
+	return s.allowed(c, object(realPath, dir), auth.ActRead)
+}
+
+// resolve returns the URL path where name (relative to the root) really
+// lives, following symlinks, and whether it may be shown at all: entries
+// in dot-directories may not, nor entries that another tool is writing in
+// place, along with everything below them. os.Root already guarantees
+// containment. For an opened file f, the file's own path is used where the
+// OS exposes it, which cannot race with symlink swaps.
+func (s *Server) resolve(name string, f *os.File) (string, bool) {
 	real, ok := "", false
 	if f != nil {
 		real, ok = fdPath(f)
@@ -120,15 +136,27 @@ func (s *Server) visible(name string, f *os.File) bool {
 	if !ok {
 		var err error
 		if real, err = filepath.EvalSymlinks(filepath.Join(s.rootPath, filepath.FromSlash(name))); err != nil {
-			return false
+			return "", false
 		}
 	}
 	rel, err := filepath.Rel(s.rootPath, real)
 	if err != nil {
-		return false
+		return "", false
 	}
 	rel = filepath.ToSlash(rel)
-	return rel == "." || !hidden(rel)
+	switch {
+	case rel == ".":
+		return "/", true
+	case hidden(rel), s.lockedPath(rel):
+		return "", false
+	}
+	return "/" + rel, true
+}
+
+// visible reports whether name may be shown; see resolve.
+func (s *Server) visible(name string, f *os.File) bool {
+	_, ok := s.resolve(name, f)
+	return ok
 }
 
 func (s *Server) openError(err error) error {

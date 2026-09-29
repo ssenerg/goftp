@@ -16,9 +16,15 @@ import (
 	"github.com/gofiber/fiber/v3"
 )
 
+// fileSecurityPolicy applies to downloads, which are always attachments:
+// should a browser still render one, its scripts neither run nor share the
+// site's origin.
+const fileSecurityPolicy = "default-src 'none'; sandbox"
+
 // serveFile streams f (taking ownership of it) with Range and conditional
 // request support.
 func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name string) error {
+	c.Set(fiber.HeaderContentSecurityPolicy, fileSecurityPolicy)
 	size := info.Size()
 	modTime := info.ModTime()
 	etag := `"` + strconv.FormatInt(modTime.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`

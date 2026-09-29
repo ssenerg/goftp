@@ -574,7 +574,8 @@ func TestPolicies(t *testing.T) {
 			t.Errorf("bob's listing: %s shown = %v", name, !want)
 		}
 	}
-	for target, want := range map[string]int{"/shared/s.txt": 200, "/private/x.txt": 403, "/private/nope": 403, "/top.txt": 403, "/public/p.txt": 200} {
+	// The rule for a folder /top.txt/ does not reveal that a file is there.
+	for target, want := range map[string]int{"/shared/s.txt": 200, "/private/x.txt": 403, "/private/nope": 403, "/top.txt": 404, "/public/p.txt": 200} {
 		if resp, _ := bob.do(t, "GET", target); resp.StatusCode != want {
 			t.Errorf("bob GET %s: %d, want %d", target, resp.StatusCode, want)
 		}

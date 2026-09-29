@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"goftp/internal/auth"
 	"goftp/internal/config"
 )
 
@@ -372,5 +373,32 @@ func TestKeepAliveWithUploads(t *testing.T) {
 	}
 	if resp, _ := f.send(t, "PUT", "/b.txt", strings.NewReader("b")); resp.StatusCode != 201 || resp.Close {
 		t.Errorf("completed upload: status %d, close %v", resp.StatusCode, resp.Close)
+	}
+}
+
+// A form upload by a visitor without rights on the file reveals nothing
+// about it, not even whether it exists.
+func TestFormUploadWithoutRightsRevealsNothing(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "drop/secret-plan.pdf", "plan")
+	// The folder, but none of its files.
+	if _, err := ta.svc.AddPolicy(auth.Anonymous, "/drop/", auth.ActWrite); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"secret-plan.pdf", "no-such.pdf"} {
+		form, ctype := multipartForm(t, formPart{field: "file", filename: name, content: "x"})
+		if resp, _ := f.as("").send(t, "POST", "/drop/", form, "Content-Type", ctype); resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s: status %d, want 401", name, resp.StatusCode)
+		}
+	}
+	if got := readFile(t, f.dir, "drop/secret-plan.pdf"); got != "plan" {
+		t.Errorf("file changed: %q", got)
+	}
+	if exists(filepath.Join(f.dir, "drop", "no-such.pdf")) {
+		t.Error("file created")
+	}
+	if l := leftovers(f.dir); len(l) > 0 {
+		t.Errorf("leftover files: %v", l)
 	}
 }

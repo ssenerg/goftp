@@ -291,12 +291,13 @@ func TestLockHeartbeatAndOwnership(t *testing.T) {
 func TestSlowFormTimesOut(t *testing.T) {
 	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
 	addr, _ := startServer(t, f)
-	for _, target := range []string{"/.auth/login", "/"} {
+	// Folder forms are only read from visitors who may create folders.
+	for target, auth := range map[string]string{"/.auth/login": "", "/": "Authorization: Bearer " + f.as("operator").token + "\r\n"} {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			t.Fatal(err)
 		}
-		fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: t\r\nContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n", target)
+		fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: t\r\n%sContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n", target, auth)
 		start := time.Now()
 		for time.Since(start) < 3*time.Second {
 			if _, err := io.WriteString(conn, "1\r\nx\r\n"); err != nil {

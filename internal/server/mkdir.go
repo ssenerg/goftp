@@ -19,6 +19,14 @@ const badFolderName = "Folder names cannot be empty or very long, start with a d
 // mkdir creates the folder named by the form field "folder" in the
 // directory at urlPath, e.g. curl -d folder=photos https://host/dir/
 func (s *Server) mkdir(c fiber.Ctx, urlPath string) error {
+	// Like uploads, this spares reading the body of visitors who may not
+	// create anything here.
+	mayCreate := func(obj string) (bool, error) { return s.allowed(c, obj, auth.ActWrite) }
+	if ok, err := mayCreate(object(urlPath, true)); err != nil {
+		return err
+	} else if !ok {
+		return s.deny(c)
+	}
 	form, _, err := s.readForm(c)
 	if err != nil {
 		return err
@@ -28,16 +36,24 @@ func (s *Server) mkdir(c fiber.Ctx, urlPath string) error {
 		return s.sendError(c, fiber.ErrBadRequest, badFolderName)
 	}
 	target := path.Join(urlPath, name)
-	if ok, err := s.allowed(c, object(target, true), auth.ActWrite); err != nil {
+	if ok, err := mayCreate(object(target, true)); err != nil {
 		return err
 	} else if !ok {
 		return s.deny(c)
 	}
-	dir, err := s.uploadDir(urlPath)
+	dir, realDir, err := s.uploadDir(urlPath)
 	if err != nil {
 		return err
 	}
 	defer dir.Close()
+	// Through symlinks, the rules of the real folder apply as well.
+	if realTarget := path.Join(realDir, name); realTarget != target {
+		if ok, err := mayCreate(object(realTarget, true)); err != nil {
+			return err
+		} else if !ok {
+			return s.deny(c)
+		}
+	}
 
 	// The lock keeps uploads of the same name out meanwhile.
 	release, err := s.acquireLock(dir, name, tempPrefix+rand.Text()+tempSuffix)

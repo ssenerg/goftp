@@ -127,6 +127,7 @@ func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 		c.Set(fiber.HeaderAllow, allowedMethods)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
+	c.Set(fiber.HeaderCacheControl, "no-store")
 	err = nil
 	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) ||
 		s.render(c, code, "error", s.errorPage(c, code, detail)) != nil {

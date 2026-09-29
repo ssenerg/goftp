@@ -69,8 +69,9 @@ goftp policy remove anonymous '/public/*' read
 
 `"/docs/*"` covers `/docs/` and everything below it; `"/docs/"` alone is
 just that listing. Listings only show what the visitor may open. Signed-in
-users may always do what anonymous visitors may. Rules apply to URL paths:
-a symlink follows the rules of its own path, not those of its target.
+users may always do what anonymous visitors may. A symlink never grants
+more than the rules of where it leads: visitors need the rights for both
+the path they use and the path the link points to.
 
 ## Running without Docker
 
@@ -123,7 +124,8 @@ lock file `.<name>.lock` keeps other uploads of it out, and the data goes to
 a hidden `.goftp-*.part` file that is renamed into place only once complete;
 until then the previous version, if any, stays available. Other tools can
 hide files they write in place the same way: create `.<name>.lock` before
-writing `<name>` and delete it afterwards (such locks are always honored).
+writing `<name>` and delete it afterwards (such locks are always honored;
+a locked folder is hidden with everything in it).
 A running upload refreshes its lock every 15 seconds; a lock left behind by
 a goftp that stopped (crash, restart) is taken over by the next upload of
 that name once it is a minute old.

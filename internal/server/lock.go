@@ -75,6 +75,20 @@ func (s *Server) locked(dir, name string) bool {
 	return err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
 }
 
+// lockedPath reports whether a lock file from another tool hides an entry
+// on the way to rel, a slash-separated path relative to the root that
+// contains no symlinks.
+func (s *Server) lockedPath(rel string) bool {
+	dir := "."
+	for name := range strings.SplitSeq(rel, "/") {
+		if s.locked(dir, name) {
+			return true
+		}
+		dir = path.Join(dir, name)
+	}
+	return false
+}
+
 // acquireLock creates the lock file for uploading name into dir, recording
 // the temp file the upload writes to, and keeps it fresh until release is
 // called. An abandoned goftp lock is taken over; any other existing lock

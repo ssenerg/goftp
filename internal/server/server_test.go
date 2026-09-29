@@ -257,6 +257,10 @@ func TestDirectoryRedirect(t *testing.T) {
 		if got := resp.Header.Get("Location"); got != loc {
 			t.Errorf("%s: Location %q, want %q", raw, got, loc)
 		}
+		// Whether the folder may be seen depends on the visitor.
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q", raw, got)
+		}
 	}
 }
 
@@ -275,6 +279,9 @@ func TestDownload(t *testing.T) {
 		"Content-Disposition": "attachment; filename=report.txt",
 		"Accept-Ranges":       "bytes",
 		"Cache-Control":       "no-store",
+		// Should a browser render a download anyway, it gets no origin.
+		"Content-Security-Policy": fileSecurityPolicy,
+		"X-Content-Type-Options":  "nosniff",
 	}
 	for k, v := range checks {
 		if got := resp.Header.Get(k); got != v {
@@ -550,6 +557,9 @@ func TestErrorResponsesAreGeneric(t *testing.T) {
 	expectStatus(t, resp, 404)
 	if body != "Not Found" || resp.Header.Get("Content-Type") != fiber.MIMETextPlainCharsetUTF8 {
 		t.Errorf("404 response %q %q", body, resp.Header.Get("Content-Type"))
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("404 Cache-Control %q", got)
 	}
 }
 
