@@ -5,19 +5,39 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"goftp/internal/db"
 	"goftp/internal/db/dbtest"
 )
 
-func TestMigrateIsIdempotentAndSerialized(t *testing.T) {
-	pool, _ := dbtest.Open(t)
+// Servers starting together must not run the same migration twice.
+func TestConcurrentMigrations(t *testing.T) {
+	url := dbtest.Schema(t)
 	ctx := context.Background()
-
-	var wg sync.WaitGroup
-	errs := make(chan error, 4)
+	var pools []*pgxpool.Pool
 	for range 4 {
-		wg.Go(func() { errs <- db.Migrate(ctx, pool) })
+		pool, err := pgxpool.New(ctx, url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pool.Close()
+		if err := pool.Ping(ctx); err != nil {
+			t.Fatal(err)
+		}
+		pools = append(pools, pool)
 	}
+
+	start := make(chan struct{})
+	errs := make(chan error, len(pools))
+	var wg sync.WaitGroup
+	for _, pool := range pools {
+		wg.Go(func() {
+			<-start
+			errs <- db.Migrate(ctx, pool)
+		})
+	}
+	close(start)
 	wg.Wait()
 	close(errs)
 	for err := range errs {
@@ -25,15 +45,18 @@ func TestMigrateIsIdempotentAndSerialized(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var versions, users int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&versions); err != nil {
+	if err := db.Migrate(ctx, pools[0]); err != nil {
+		t.Fatalf("migrating again: %v", err)
+	}
+	var versions, rules int
+	if err := pools[0].QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&versions); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM users").Scan(&users); err != nil {
+	if err := pools[0].QueryRow(ctx, "SELECT count(*) FROM casbin_rule").Scan(&rules); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 1 || users != 0 {
-		t.Errorf("%d migrations recorded, %d users", versions, users)
+	if versions != 1 || rules != 7 {
+		t.Errorf("%d migrations recorded, %d rules seeded", versions, rules)
 	}
 }
 

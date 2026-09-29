@@ -280,13 +280,13 @@ func WatchPolicies(ctx context.Context, db *pgxpool.Pool, e *casbin.SyncedEnforc
 }
 
 func listen(ctx context.Context, db *pgxpool.Pool, resync time.Duration, reload func()) error {
-	conn, err := db.Acquire(ctx)
+	pooled, err := db.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	// A connection left in LISTEN mode must not go back to the pool.
-	defer conn.Conn().Close(context.Background())
-	defer conn.Release()
+	conn := pooled.Hijack()
+	defer conn.Close(context.Background())
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{policyChannel}.Sanitize()); err != nil {
 		return err
 	}
@@ -294,7 +294,7 @@ func listen(ctx context.Context, db *pgxpool.Pool, resync time.Duration, reload 
 	reload()
 	for {
 		wait, cancel := context.WithTimeout(ctx, resync)
-		_, err := conn.Conn().WaitForNotification(wait)
+		_, err := conn.WaitForNotification(wait)
 		cancel()
 		switch {
 		case err == nil, errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil:

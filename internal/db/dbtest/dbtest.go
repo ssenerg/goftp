@@ -18,10 +18,22 @@ import (
 // EnvURL names the variable holding the test database URL.
 const EnvURL = "GOFTP_TEST_DATABASE_URL"
 
-// Open returns a pool on a new schema of the database at $GOFTP_TEST_DATABASE_URL,
-// and a URL for further connections to it. The test is skipped when the
-// variable is unset.
+// Open returns a pool on a new, migrated schema of the database at
+// $GOFTP_TEST_DATABASE_URL, and the URL of that schema. The test is skipped
+// when the variable is unset.
 func Open(t testing.TB) (*pgxpool.Pool, string) {
+	t.Helper()
+	url := Schema(t)
+	pool, err := db.Open(context.Background(), url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	return pool, url
+}
+
+// Schema creates an empty schema and returns the URL of it.
+func Schema(t testing.TB) string {
 	t.Helper()
 	base := os.Getenv(EnvURL)
 	if base == "" {
@@ -49,10 +61,5 @@ func Open(t testing.TB) (*pgxpool.Pool, string) {
 	q := u.Query()
 	q.Set("search_path", schema)
 	u.RawQuery = q.Encode()
-	pool, err := db.Open(ctx, u.String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-	return pool, u.String()
+	return u.String()
 }

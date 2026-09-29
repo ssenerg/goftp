@@ -22,8 +22,10 @@ docker compose exec goftp goftp user add alice --role superadmin
 
 `user add` prints a temporary password. Open http://localhost:8080, sign in
 and choose a new password. Files live in the `files` volume, the database
-in `pgdata`. Put a TLS-terminating reverse proxy in front (or mount a
-certificate and set `GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`).
+in `pgdata`; to serve a host directory instead, mount it at `/data` (and
+make it writable by UID 65532, the image's user, for uploads). Put a
+TLS-terminating reverse proxy in front (or mount a certificate and set
+`GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`).
 
 ## Users and roles
 
@@ -60,7 +62,8 @@ goftp policy remove anonymous '/public/*' read
 
 `"/docs/*"` covers `/docs/` and everything below it; `"/docs/"` alone is
 just that listing. Listings only show what the visitor may open. Signed-in
-users may always do what anonymous visitors may.
+users may always do what anonymous visitors may. Rules apply to URL paths:
+a symlink follows the rules of its own path, not those of its target.
 
 ## Running without Docker
 

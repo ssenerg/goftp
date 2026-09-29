@@ -17,7 +17,7 @@ import (
 var migrations embed.FS
 
 // migrateLock is the advisory lock key serializing concurrent migrations.
-const migrateLock = 0x676f667470 // "goftp"
+const migrateLock int64 = 0x676f667470 // "goftp"
 
 // Open connects to Postgres and applies pending migrations.
 func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
