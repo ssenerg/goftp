@@ -1,0 +1,22 @@
+{{define "error"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container narrow">
+  <div class="card error-card">
+    <div class="code">{{.Code}}</div>
+    <h1>{{.Title}}</h1>
+    <p class="muted">{{.Message}}</p>
+    {{with .Detail}}<p class="detail">{{.}}</p>{{end}}
+    <div class="row">
+      {{if .SignIn}}<a class="btn primary" href="/.auth/login?next={{.Here}}">Sign in</a>{{end}}
+      {{with .Back}}<a class="btn" href="{{.}}">Back to the folder</a>{{end}}
+      <a class="btn{{if not .SignIn}} primary{{end}}" href="/">Go to all files</a>
+    </div>
+  </div>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

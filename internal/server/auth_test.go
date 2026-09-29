@@ -160,7 +160,7 @@ func TestLoginForm(t *testing.T) {
 	// The cookie signs the visitor in.
 	resp, body = f.do(t, "GET", "/", "Cookie", cookieName+"="+c.Value)
 	expectStatus(t, resp, 200)
-	if !strings.Contains(body, "Signed in as <strong>"+name+"</strong> (operator)") {
+	if !strings.Contains(body, "Signed in as <strong>"+name+`</strong><span class="role">operator</span>`) {
 		t.Error("listing does not show the user")
 	}
 	resp, _ = f.do(t, "GET", loginPath+"?next=/sub/", "Cookie", cookieName+"="+c.Value)
@@ -260,7 +260,7 @@ func TestFirstLoginRequiresPasswordChange(t *testing.T) {
 
 	resp, body = f.do(t, "GET", passwordPath+"?next=/a.txt", "Cookie", cookie)
 	expectStatus(t, resp, 200)
-	for _, want := range []string{"Your password is temporary", `name="current_password"`, `name="new_password"`, `name="confirm_password"`, `name="next" value="/a.txt"`} {
+	for _, want := range []string{"You signed in with a temporary password", `name="current_password"`, `name="new_password"`, `name="confirm_password"`, `name="next" value="/a.txt"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("password page lacks %s", want)
 		}

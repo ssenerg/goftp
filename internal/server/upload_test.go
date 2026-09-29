@@ -194,7 +194,7 @@ func TestFormUpload(t *testing.T) {
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.HasSuffix(csp, "form-action 'self'") {
 		t.Errorf("CSP %q", csp)
 	}
-	for _, want := range []string{`<form class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="replace"`, `name="file"`} {
+	for _, want := range []string{`<form id="upload" class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="replace"`, `name="file"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("listing lacks %s", want)
 		}
@@ -204,11 +204,15 @@ func TestFormUpload(t *testing.T) {
 		formPart{field: "file", filename: "a.txt", content: "alpha"},
 		formPart{field: "file", filename: "../../b.txt", content: "beta"},
 	)
-	resp, _ = f.send(t, "POST", "/sub", form, "Content-Type", ctype)
+	resp, _ = f.send(t, "POST", "/sub", form, "Content-Type", ctype, "Accept", "text/html")
 	expectStatus(t, resp, http.StatusSeeOther)
-	if got := resp.Header.Get("Location"); got != "/sub/" {
+	if got := resp.Header.Get("Location"); got != "/sub/?uploaded=2" {
 		t.Errorf("Location %q", got)
 	}
+	// Scripts get a status instead of a page.
+	form, ctype = multipartForm(t, formPart{field: "file", filename: "s.txt", content: "s"})
+	resp, _ = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
+	expectStatus(t, resp, http.StatusCreated)
 	if readFile(t, f.dir, "sub/a.txt") != "alpha" || readFile(t, f.dir, "sub/b.txt") != "beta" {
 		t.Error("uploaded files have the wrong content")
 	}
@@ -262,7 +266,7 @@ func TestFormUpload(t *testing.T) {
 		formPart{field: "file", filename: "a.txt", content: "changed"},
 	)
 	resp, _ = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
-	expectStatus(t, resp, http.StatusSeeOther)
+	expectStatus(t, resp, http.StatusCreated)
 	if readFile(t, f.dir, "sub/a.txt") != "changed" {
 		t.Error("replace did not replace")
 	}

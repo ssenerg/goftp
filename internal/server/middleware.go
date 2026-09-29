@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/netip"
+	"path"
 	"strings"
 	"time"
 
@@ -106,9 +107,15 @@ func (s *Server) writeAccess(a access, bytes int64, err error) {
 	ce.Write(fields...)
 }
 
-// handleError replies with a generic status text so internal details never
-// reach the client.
+// handleError replies with a generic description of the error, so internal
+// details never reach the client.
 func (s *Server) handleError(c fiber.Ctx, err error) error {
+	return s.sendError(c, err, "")
+}
+
+// sendError answers with err's status: a page for browsers, plain text for
+// other clients. detail is shown as is.
+func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 	code := fiber.StatusInternalServerError
 	var fe *fiber.Error
 	if errors.As(err, &fe) {
@@ -120,8 +127,16 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 		c.Set(fiber.HeaderAllow, allowedMethods)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
-	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
-	err = c.Status(code).SendString(http.StatusText(code))
+	err = nil
+	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) ||
+		s.render(c, code, "error", s.errorPage(c, code, detail)) != nil {
+		text := http.StatusText(code)
+		if detail != "" {
+			text += "\n" + detail + "\n"
+		}
+		c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
+		err = c.Status(code).SendString(text)
+	}
 
 	// Fiber calls the error handler outside the middleware chain for
 	// request-level failures; log those here.
@@ -133,6 +148,43 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 		s.writeAccess(newAccess(c, st.start), bodySize(c), nil)
 	}
 	return err
+}
+
+type errorPage struct {
+	page
+	Code    int
+	Message string
+	Detail  string
+	Back    string
+	SignIn  bool
+}
+
+var errorMessages = map[int]string{
+	fiber.StatusBadRequest:            "The request could not be understood.",
+	fiber.StatusUnauthorized:          "Sign in to continue.",
+	fiber.StatusForbidden:             "You don't have access to this. Ask an administrator if you need it.",
+	fiber.StatusNotFound:              "There is nothing here. It may have been moved or deleted, or it is still being uploaded.",
+	fiber.StatusConflict:              "A file or folder with this name already exists, or is being uploaded right now.",
+	fiber.StatusRequestEntityTooLarge: "The file is larger than this server accepts.",
+	fiber.StatusTooManyRequests:       "Too many attempts. Wait a moment and try again.",
+	fiber.StatusServiceUnavailable:    "The server is busy. Try again in a moment.",
+	fiber.StatusInsufficientStorage:   "The server is out of disk space.",
+}
+
+func (s *Server) errorPage(c fiber.Ctx, code int, detail string) errorPage {
+	p := errorPage{page: s.page(c, http.StatusText(code)), Code: code, Detail: detail,
+		Message: errorMessages[code], SignIn: code == fiber.StatusUnauthorized && userOf(c) == nil}
+	if p.Message == "" {
+		p.Message = "Something went wrong. Try again later."
+	}
+	// Offer the way back to the folder of the failed request.
+	if urlPath, _, err := cleanPath(c.Path()); err == nil && urlPath != "/" && !hidden(urlPath) {
+		if c.Method() != fiber.MethodPost {
+			urlPath = path.Dir(urlPath)
+		}
+		p.Back = escapePath(object(urlPath, true))
+	}
+	return p
 }
 
 func (s *Server) logPanic(c fiber.Ctx, e any) {
