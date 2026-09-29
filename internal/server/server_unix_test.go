@@ -125,3 +125,22 @@ func TestNoFileDescriptorLeaks(t *testing.T) {
 		t.Errorf("file descriptors leaked: %d before, %d after", before, after)
 	}
 }
+
+func TestUploadIntoHiddenDirViaSymlink(t *testing.T) {
+	f := newFixture(t, withUploads)
+	f.write(t, ".git/config", "secret")
+	if err := os.Symlink(".git", filepath.Join(f.dir, "pub")); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := f.send(t, "PUT", upKeyed("/pub/x.txt"), strings.NewReader("x")); resp.StatusCode != 409 {
+		t.Errorf("PUT through link: %d", resp.StatusCode)
+	}
+	form, ctype := multipartForm(t, formPart{field: "key", content: uploadKey}, formPart{field: "file", filename: "y.txt", content: "y"})
+	if resp, _ := f.send(t, "POST", "/pub/", form, "Content-Type", ctype); resp.StatusCode != 404 {
+		t.Errorf("form upload through link: %d", resp.StatusCode)
+	}
+	entries, _ := os.ReadDir(filepath.Join(f.dir, ".git"))
+	if len(entries) != 1 {
+		t.Errorf("files written into .git: %v", entries)
+	}
+}

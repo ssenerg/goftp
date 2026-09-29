@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/helmet"
@@ -24,17 +26,22 @@ import (
 const readBufferSize = 16 << 10
 
 const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-	"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	"base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 type Server struct {
-	cfg       *config.Config
-	log       *zap.Logger
-	app       *fiber.App
-	root      *os.Root
-	rootPath  string
-	limiter   *failureLimiter
-	keyHash   [sha256.Size]byte
-	errEscape error
+	cfg           *config.Config
+	log           *zap.Logger
+	app           *fiber.App
+	root          *os.Root
+	rootPath      string
+	limiter       *failureLimiter
+	keyHash       [sha256.Size]byte
+	uploadKeyHash [sha256.Size]byte
+	errEscape     error
+	allow         string
+	// instance identifies this process in upload lock files.
+	instance string
+	lockMu   sync.Mutex
 }
 
 func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
@@ -53,22 +60,32 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 		rootPath:  rootPath,
 		keyHash:   sha256.Sum256([]byte(cfg.SecureKey)),
 		errEscape: escapeError(root),
+		allow:     "GET, HEAD",
+		instance:  rand.Text(),
+	}
+	uploads := cfg.Upload.Enabled
+	if uploads {
+		s.uploadKeyHash = sha256.Sum256([]byte(cfg.Upload.Key))
+		s.allow = "GET, HEAD, PUT, POST"
 	}
 
 	s.app = fiber.New(fiber.Config{
-		ErrorHandler:       s.handleError,
-		ReadTimeout:        cfg.Server.ReadTimeout,
-		WriteTimeout:       cfg.Server.WriteTimeout,
-		IdleTimeout:        cfg.Server.IdleTimeout,
-		ReadBufferSize:     readBufferSize,
-		ReduceMemoryUsage:  true,
-		GETOnly:            true,
-		CaseSensitive:      true,
-		StrictRouting:      true,
-		ProxyHeader:        cfg.Server.ProxyHeader,
-		TrustProxy:         cfg.Server.ProxyHeader != "",
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
-		EnableIPValidation: true,
+		ErrorHandler:      s.handleError,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		ReadBufferSize:    readBufferSize,
+		ReduceMemoryUsage: true,
+		GETOnly:           !uploads,
+		// Uploads are streamed to disk instead of buffered in memory.
+		StreamRequestBody:            uploads,
+		DisablePreParseMultipartForm: true,
+		CaseSensitive:                true,
+		StrictRouting:                true,
+		ProxyHeader:                  cfg.Server.ProxyHeader,
+		TrustProxy:                   cfg.Server.ProxyHeader != "",
+		TrustProxyConfig:             fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
+		EnableIPValidation:           true,
 	})
 
 	hsts := 0
@@ -90,7 +107,14 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	if cfg.Limiter.MaxFailures > 0 {
 		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
+	if uploads {
+		s.app.Use(closeUnreadBody)
+	}
 	s.app.Get("/*", s.handle)
+	if uploads {
+		s.app.Put("/*", s.put)
+		s.app.Post("/*", s.postForm)
+	}
 	return s, nil
 }
 

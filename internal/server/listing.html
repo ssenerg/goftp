@@ -81,6 +81,18 @@
   .icon-file { color: var(--file); }
   .size { color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
   .date { color: var(--text-dim); white-space: nowrap; font-size: 0.85rem; text-align: right; }
+  .upload { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; font-size: 0.85rem; }
+  .upload input, .upload button {
+    font: inherit;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.4rem 0.6rem;
+  }
+  .upload input[type=file] { flex: 1; min-width: 12rem; }
+  .upload button { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
+  .upload button:hover { background: var(--accent-hover); }
   .parent-link { display: inline-flex; align-items: center; gap: 0.3rem; margin-bottom: 0.75rem; }
   .parent-link a { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
   .parent-link a:hover { text-decoration: underline; }
@@ -109,6 +121,14 @@
     <h1><span class="logo">goftp</span></h1>
     <div class="breadcrumb">{{.Path}}</div>
   </header>
+
+  {{with .Upload}}
+  <form class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
+    <input type="password" name="{{.KeyField}}" placeholder="Upload key" autocomplete="current-password" required>
+    <input type="file" name="file" multiple required>
+    <button type="submit">Upload</button>
+  </form>
+  {{end}}
 
   {{with .Parent}}
   <div class="parent-link">

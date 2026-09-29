@@ -32,6 +32,9 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if hidden(urlPath) {
 		return fiber.ErrForbidden
 	}
+	if dir, name := path.Split(urlPath); name != "" && s.locked(rootName(path.Clean(dir)), name) {
+		return fiber.ErrNotFound
+	}
 
 	f, err := s.open(urlPath)
 	if err != nil {
@@ -55,7 +58,7 @@ func (s *Server) handle(c fiber.Ctx) error {
 		_ = f.Close()
 		return fiber.ErrNotFound
 	}
-	if ok, err := s.authorize(c); !ok {
+	if ok, err := s.authorize(c, c.Query(s.cfg.Query), &s.keyHash); !ok {
 		_ = f.Close()
 		return err
 	}
@@ -134,16 +137,15 @@ func (s *Server) openError(err error) error {
 	}
 }
 
-// authorize checks the access key, comparing SHA-256 digests in constant
-// time so neither the key nor its length leaks through timing. Wrong keys
-// count against the client's budget; once it is spent, attempts are
-// refused without revealing whether the key was right.
-func (s *Server) authorize(c fiber.Ctx) (bool, error) {
-	key := c.Query(s.cfg.Query)
+// authorize checks key against the digest want, comparing SHA-256 digests
+// in constant time so neither the key nor its length leaks through timing.
+// Wrong keys count against the client's budget; once it is spent, attempts
+// are refused without revealing whether the key was right.
+func (s *Server) authorize(c fiber.Ctx, key string, want *[sha256.Size]byte) (bool, error) {
 	valid := false
 	if key != "" {
 		sum := sha256.Sum256([]byte(key))
-		valid = subtle.ConstantTimeCompare(sum[:], s.keyHash[:]) == 1
+		valid = subtle.ConstantTimeCompare(sum[:], want[:]) == 1
 	}
 	if s.limiter != nil && key != "" {
 		if wait := s.limiter.attempt(clientKey(c.IP()), !valid, time.Now()); wait > 0 {

@@ -109,7 +109,12 @@ func (f *fixture) write(t *testing.T, name, content string) {
 // do sends rawURI verbatim, so malformed paths reach the server unchanged.
 func (f *fixture) do(t *testing.T, method, rawURI string, headers ...string) (*http.Response, string) {
 	t.Helper()
-	req := httptest.NewRequest(method, "/", nil)
+	return f.send(t, method, rawURI, nil, headers...)
+}
+
+func (f *fixture) send(t *testing.T, method, rawURI string, reqBody io.Reader, headers ...string) (*http.Response, string) {
+	t.Helper()
+	req := httptest.NewRequest(method, "/", reqBody)
 	req.URL = &url.URL{Opaque: rawURI}
 	if strings.HasPrefix(rawURI, "//") {
 		// Opaque would gain a scheme prefix; use a raw path instead.

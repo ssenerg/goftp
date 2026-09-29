@@ -30,3 +30,9 @@ tls:                     # serve HTTPS directly (enables HSTS)
 limiter:                 # per-client budget of wrong access keys
   max_failures: 20       # 0 disables
   window: 1m
+
+upload:                  # PUT and form uploads; off by default
+  enabled: false
+  # Separate from the download key; prefer GOFTP_UPLOAD_KEY. Minimum 16 characters.
+  # key: ""
+  max_size: 0            # per file, e.g. 10GiB; 0 = unlimited

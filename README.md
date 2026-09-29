@@ -25,6 +25,29 @@ flags > environment > config file > defaults. The key is read from
 `GOFTP_SECURE_KEY` or `SECURE_KEY`; it is intentionally not a flag, since
 command lines are visible to other local users.
 
+## Uploads
+
+Uploads are off by default and use their own key, so shared download links
+never grant write access:
+
+```sh
+export GOFTP_UPLOAD_ENABLED=true GOFTP_UPLOAD_KEY="$(openssl rand -hex 24)"
+```
+
+- Browser: listing pages show an upload form (upload key and files).
+- curl: `curl -T file.iso -H "Authorization: Bearer $GOFTP_UPLOAD_KEY" https://host/dir/`
+  (or pass `?key=` in the URL, naming the file). Add `-H "If-None-Match: *"` to
+  never replace an existing file.
+
+The target directory must exist, and `upload.max_size` caps each file. While
+a file is uploading, the lock file `.<name>.lock` hides it from listings and
+downloads, and the data goes to a hidden `.goftp-*.part` file that is renamed
+into place only once complete, so partial uploads are never visible. Other
+tools can use the same convention: create `.<name>.lock` before writing
+`<name>` and remove it afterwards. A crash can leave `.goftp-*.part` files
+behind; they are safe to delete, and their locks are ignored and replaced by
+the next upload of that name. Run one goftp instance per directory.
+
 ## Security notes
 
 - Serve over HTTPS (`tls.*` settings or a TLS-terminating proxy): the key

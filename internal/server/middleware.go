@@ -14,7 +14,10 @@ import (
 
 type ctxKey int
 
-const logStateKey ctxKey = iota
+const (
+	logStateKey ctxKey = iota
+	bodyDoneKey
+)
 
 type logState struct {
 	start    time.Time
@@ -113,7 +116,7 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 		s.log.Error("request failed", zap.String("path", c.Path()), zap.Error(err))
 	}
 	if code == fiber.StatusMethodNotAllowed {
-		c.Set(fiber.HeaderAllow, "GET, HEAD")
+		c.Set(fiber.HeaderAllow, s.allow)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)

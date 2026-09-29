@@ -137,6 +137,11 @@ func TestLoadErrors(t *testing.T) {
 		{"unknown key", map[string]string{"SECURE_KEY": validKey}, []string{"--config", typo}, "limitter"},
 		{"missing file", map[string]string{"SECURE_KEY": validKey}, []string{"--config", filepath.Join(dir, "nope.yaml")}, "read config"},
 		{"legacy flag", map[string]string{"SECURE_KEY": validKey}, []string{"-dir", "."}, "unknown shorthand"},
+		{"upload without key", map[string]string{"SECURE_KEY": validKey, "GOFTP_UPLOAD_ENABLED": "true"}, nil, "upload key must be at least"},
+		{"upload short key", map[string]string{"SECURE_KEY": validKey, "GOFTP_UPLOAD_ENABLED": "true", "GOFTP_UPLOAD_KEY": "short"}, nil, "upload key must be at least"},
+		{"upload key reused", map[string]string{"SECURE_KEY": validKey, "GOFTP_UPLOAD_ENABLED": "true", "GOFTP_UPLOAD_KEY": validKey}, nil, "must differ"},
+		{"bad max size", map[string]string{"SECURE_KEY": validKey, "GOFTP_UPLOAD_MAX_SIZE": "10XB"}, nil, "invalid size"},
+		{"negative max size", map[string]string{"SECURE_KEY": validKey, "GOFTP_UPLOAD_MAX_SIZE": "-1"}, nil, "invalid size"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -156,5 +161,44 @@ func TestLoadHelp(t *testing.T) {
 	clearEnv(t)
 	if _, err := Load([]string{"--help"}); !errors.Is(err, pflag.ErrHelp) {
 		t.Fatalf("got %v, want pflag.ErrHelp", err)
+	}
+}
+
+func TestLoadUpload(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("SECURE_KEY", validKey)
+	t.Setenv("GOFTP_UPLOAD_ENABLED", "true")
+	t.Setenv("GOFTP_UPLOAD_KEY", "upload-key-0123456789")
+	t.Setenv("GOFTP_UPLOAD_MAX_SIZE", "1.5GiB")
+
+	cfg, err := Load(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Upload.Enabled || cfg.Upload.Key != "upload-key-0123456789" || cfg.Upload.MaxSize != 3<<29 {
+		t.Errorf("upload config: %+v", cfg.Upload)
+	}
+
+	clearEnv(t)
+	t.Setenv("SECURE_KEY", validKey)
+	if cfg, err = Load(nil); err != nil || cfg.Upload.Enabled || cfg.Upload.MaxSize != 0 {
+		t.Errorf("uploads should be off by default: %+v, %v", cfg.Upload, err)
+	}
+}
+
+func TestParseByteSize(t *testing.T) {
+	tests := map[string]ByteSize{
+		"0": 0, "1024": 1024, "10B": 10, "1kb": 1000, "2 MiB": 2 << 20,
+		"10GB": 10e9, "1.5GiB": 3 << 29, "1TiB": 1 << 40,
+	}
+	for in, want := range tests {
+		if got, err := parseByteSize(in); err != nil || got != want {
+			t.Errorf("parseByteSize(%q) = %d, %v; want %d", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "GB", "1.2.3MB", "-5", "5PB", "1e3", "9999999999TiB", "NaN"} {
+		if _, err := parseByteSize(in); err == nil {
+			t.Errorf("parseByteSize(%q) should fail", in)
+		}
 	}
 }

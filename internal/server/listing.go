@@ -25,6 +25,12 @@ type listing struct {
 	Path   string
 	Parent string
 	Items  []listItem
+	Upload *uploadForm
+}
+
+type uploadForm struct {
+	Action   string
+	KeyField string
 }
 
 type listItem struct {
@@ -45,8 +51,18 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 	if err != nil {
 		return err
 	}
+	// Entries with a live lock file are still being uploaded.
+	locked := make(map[string]bool)
+	for _, e := range entries {
+		if target, ok := lockTarget(e.Name()); ok && s.locked(rootName(urlPath), target) {
+			locked[target] = true
+		}
+	}
 	items := make([]listItem, 0, len(entries))
 	for _, e := range entries {
+		if locked[e.Name()] {
+			continue
+		}
 		if item, ok := s.listItem(urlPath, e); ok {
 			items = append(items, item)
 		}
@@ -65,6 +81,9 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 	})
 
 	data := listing{Title: "/", Path: urlPath, Items: items}
+	if s.cfg.Upload.Enabled {
+		data.Upload = &uploadForm{Action: escapePath(strings.TrimSuffix(urlPath, "/") + "/"), KeyField: s.cfg.Query}
+	}
 	if urlPath != "/" {
 		data.Title = path.Base(urlPath)
 		data.Parent = escapePath(strings.TrimSuffix(path.Dir(urlPath), "/") + "/")

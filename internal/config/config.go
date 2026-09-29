@@ -3,10 +3,12 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +31,7 @@ type Config struct {
 	Server    ServerConfig  `mapstructure:"server"`
 	TLS       TLSConfig     `mapstructure:"tls"`
 	Limiter   LimiterConfig `mapstructure:"limiter"`
+	Upload    UploadConfig  `mapstructure:"upload"`
 }
 
 type LogConfig struct {
@@ -53,6 +56,42 @@ type TLSConfig struct {
 type LimiterConfig struct {
 	MaxFailures int           `mapstructure:"max_failures"`
 	Window      time.Duration `mapstructure:"window"`
+}
+
+type UploadConfig struct {
+	Enabled bool     `mapstructure:"enabled"`
+	Key     string   `mapstructure:"key"`
+	MaxSize ByteSize `mapstructure:"max_size"`
+}
+
+// ByteSize is a size in bytes; config values may use units such as "10GiB".
+type ByteSize int64
+
+var sizeUnits = map[string]float64{
+	"": 1, "b": 1,
+	"kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+	"kib": 1 << 10, "mib": 1 << 20, "gib": 1 << 30, "tib": 1 << 40,
+}
+
+func parseByteSize(s string) (ByteSize, error) {
+	s = strings.TrimSpace(s)
+	i := strings.IndexFunc(s, func(r rune) bool { return (r < '0' || r > '9') && r != '.' })
+	if i < 0 {
+		i = len(s)
+	}
+	n, err := strconv.ParseFloat(s[:i], 64)
+	mult, ok := sizeUnits[strings.ToLower(strings.TrimSpace(s[i:]))]
+	if err != nil || !ok || n < 0 || n*mult >= math.MaxInt64 {
+		return 0, fmt.Errorf("invalid size %q, e.g. \"512MiB\" or \"10GB\"", s)
+	}
+	return ByteSize(n * mult), nil
+}
+
+func decodeByteSize(from, to reflect.Type, data any) (any, error) {
+	if to != reflect.TypeFor[ByteSize]() || from.Kind() != reflect.String {
+		return data, nil
+	}
+	return parseByteSize(data.(string))
 }
 
 // Load builds the configuration from defaults, an optional config file,
@@ -85,6 +124,9 @@ func Load(args []string) (*Config, error) {
 	if err := v.BindEnv("secure_key", "GOFTP_SECURE_KEY", "SECURE_KEY"); err != nil {
 		return nil, err
 	}
+	if err := v.BindEnv("upload.key", "GOFTP_UPLOAD_KEY"); err != nil {
+		return nil, err
+	}
 
 	if *configFile != "" {
 		v.SetConfigFile(*configFile)
@@ -96,6 +138,7 @@ func Load(args []string) (*Config, error) {
 	var cfg Config
 	hooks := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(
 		rejectUnitlessDuration,
+		decodeByteSize,
 		mapstructure.StringToTimeDurationHookFunc(),
 		mapstructure.StringToSliceHookFunc(","),
 	))
@@ -131,6 +174,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tls.key_file", "")
 	v.SetDefault("limiter.max_failures", 20)
 	v.SetDefault("limiter.window", time.Minute)
+	v.SetDefault("upload.enabled", false)
+	v.SetDefault("upload.key", "")
+	v.SetDefault("upload.max_size", 0)
 }
 
 func (c *Config) normalize() error {
@@ -186,6 +232,18 @@ func (c *Config) normalize() error {
 	}
 	if c.Limiter.MaxFailures > 0 && c.Limiter.Window < time.Second {
 		errs = append(errs, errors.New("limiter.window must be at least 1s"))
+	}
+	if c.Upload.Enabled {
+		switch {
+		case len(c.Upload.Key) < MinKeyLength:
+			errs = append(errs, fmt.Errorf("upload key must be at least %d characters (set GOFTP_UPLOAD_KEY)", MinKeyLength))
+		case c.Upload.Key == c.SecureKey:
+			// Download links are shared; they must not grant write access.
+			errs = append(errs, errors.New("upload key must differ from the download key"))
+		}
+	}
+	if c.Upload.MaxSize < 0 {
+		errs = append(errs, errors.New("upload.max_size must not be negative"))
 	}
 	return errors.Join(errs...)
 }
