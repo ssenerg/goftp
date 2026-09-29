@@ -9,10 +9,10 @@ import (
 	"mime"
 	"mime/multipart"
 	"net"
-	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -118,11 +118,15 @@ func (s *Server) postForm(c fiber.Ctx) error {
 		case part.FormName() == s.cfg.Query && name == "":
 			v, err := io.ReadAll(io.LimitReader(part, 1024))
 			if err != nil {
-				return s.uploadError(body, fiber.ErrBadRequest)
+				return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
 			}
 			key = string(v)
 		case part.FormName() == "replace" && name == "":
-			replace = true
+			v, err := io.ReadAll(io.LimitReader(part, 16))
+			if err != nil {
+				return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
+			}
+			replace = slices.Contains([]string{"1", "on", "true"}, string(v))
 		case part.FormName() == "file" && name != "":
 			if dir == nil {
 				if ok, err := s.authorize(c, key, &s.uploadKeyHash); !ok {
@@ -160,15 +164,11 @@ func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
 	if len(stored) == 0 {
 		return err
 	}
-	code := fiber.StatusInternalServerError
-	var fe *fiber.Error
-	if errors.As(err, &fe) {
-		code = fe.Code
-	} else {
-		s.log.Error("request failed", zap.String("path", c.Path()), zap.Error(err))
+	if herr := s.handleError(c, err); herr != nil {
+		return herr
 	}
-	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
-	return c.Status(code).SendString(http.StatusText(code) + "\nStored before the error: " + strings.Join(stored, ", ") + "\n")
+	c.Response().AppendBodyString("\nStored before the error: " + strings.Join(stored, ", ") + "\n")
+	return nil
 }
 
 // uploadKey takes the key from an "Authorization: Bearer" header, which
@@ -215,12 +215,13 @@ var errExists = errors.New("file exists")
 // replace, an existing name yields errExists.
 func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool) (created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
-	if err := s.acquireLock(dir, name, tmp); err != nil {
+	release, err := s.acquireLock(dir, name, tmp)
+	if err != nil {
 		return false, 0, err
 	}
 	defer func() {
 		_ = dir.Remove(tmp)
-		_ = dir.Remove(lockName(name))
+		release()
 	}()
 
 	created = true
@@ -320,7 +321,8 @@ func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool
 		zap.Bool("replaced", !created))
 }
 
-// uploadError maps a failed upload to a response status.
+// uploadError maps a failed upload to a response status; other errors
+// are server-side faults (500, logged).
 func (s *Server) uploadError(body *requestBody, err error) error {
 	var (
 		fe      *fiber.Error
@@ -335,8 +337,10 @@ func (s *Server) uploadError(body *requestBody, err error) error {
 		return fiber.ErrBadRequest
 	case errors.Is(err, syscall.ENOSPC):
 		return fiber.ErrInsufficientStorage
+	case errors.Is(err, syscall.ENAMETOOLONG):
+		return fiber.ErrBadRequest
 	default:
-		return s.openError(err)
+		return err
 	}
 }
 

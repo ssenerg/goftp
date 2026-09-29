@@ -248,3 +248,41 @@ func TestUnreadBodyClosesConnection(t *testing.T) {
 		}
 	}
 }
+
+// A live upload keeps its lock fresh even while no data arrives (slow
+// client, long fsync), and never removes a lock that is not its own.
+func TestLockHeartbeatAndOwnership(t *testing.T) {
+	refresh, expiry := lockRefresh, lockExpiry
+	lockRefresh, lockExpiry = 50*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { lockRefresh, lockExpiry = refresh, expiry })
+
+	f := newFixture(t, withUploads)
+	addr, _ := startServer(t, f)
+	conn := startUpload(t, f, addr, "held.bin", bytes.Repeat([]byte("h"), 1<<20))
+	lock := filepath.Join(f.dir, lockName("held.bin"))
+
+	time.Sleep(3 * lockExpiry)
+	if info, err := os.Stat(lock); err != nil || time.Since(info.ModTime()) > lockExpiry {
+		t.Fatalf("lock not refreshed: %v", err)
+	}
+	if resp, _ := f.send(t, "PUT", upKeyed("/held.bin"), strings.NewReader("x")); resp.StatusCode != 409 {
+		t.Errorf("live upload taken over: %d", resp.StatusCode)
+	}
+
+	other := lockMagic + ".goftp-OTHER.part\n"
+	if err := os.WriteFile(lock, []byte(other), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+	waitFor(t, "aborted upload to finish", func() bool {
+		for _, e := range f.logs.entries("request") {
+			if e["path"] == "/held.bin" && e["status"] == float64(http.StatusBadRequest) {
+				return true
+			}
+		}
+		return false
+	})
+	if got := readFile(t, f.dir, lockName("held.bin")); got != other {
+		t.Errorf("upload removed a lock it does not own: %q", got)
+	}
+}

@@ -27,6 +27,13 @@ const (
 
 var errForeignLock = errors.New("lock not created by goftp")
 
+// A running upload refreshes its lock's mtime every lockRefresh; a lock
+// idle for lockExpiry belongs to an upload that died (crash, restart).
+var (
+	lockRefresh = 15 * time.Second
+	lockExpiry  = 4 * lockRefresh
+)
+
 func lockName(name string) string { return "." + name + lockSuffix }
 
 // lockTarget returns the entry a lock file name refers to.
@@ -42,7 +49,8 @@ func validTemp(name string) bool {
 		len(name) <= 64 && !strings.ContainsAny(name, `/\`)
 }
 
-// readLock returns the temp file named in a goftp lock file. Other locks
+// readLock returns the temp file named in a goftp lock file; the random
+// temp name also identifies the upload that owns the lock. Other locks
 // yield errForeignLock.
 func readLock(r *os.Root, name string) (string, error) {
 	f, err := r.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
@@ -68,9 +76,10 @@ func (s *Server) locked(dir, name string) bool {
 }
 
 // acquireLock creates the lock file for uploading name into dir, recording
-// the temp file the upload writes to. An abandoned goftp lock (crash,
-// restart) is taken over; any other existing lock means the name is busy.
-func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
+// the temp file the upload writes to, and keeps it fresh until release is
+// called. An abandoned goftp lock is taken over; any other existing lock
+// means the name is busy.
+func (s *Server) acquireLock(dir *os.Root, name, tmp string) (release func(), err error) {
 	s.lockMu.Lock()
 	defer s.lockMu.Unlock()
 	lock := lockName(name)
@@ -83,34 +92,52 @@ func (s *Server) acquireLock(dir *os.Root, name, tmp string) error {
 			}
 			if err != nil {
 				_ = dir.Remove(lock)
+				return nil, err
 			}
-			return err
+			return s.holdLock(dir, lock, tmp), nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return err
+			return nil, err
 		}
 		staleTmp, err := readLock(dir, lock)
-		if err != nil || !s.abandoned(dir, lock, staleTmp) {
-			return fiber.ErrConflict
+		if err != nil {
+			return nil, fiber.ErrConflict
+		}
+		if info, err := dir.Lstat(lock); err != nil || time.Since(info.ModTime()) < lockExpiry {
+			return nil, fiber.ErrConflict
 		}
 		_ = dir.Remove(staleTmp)
 		if err := dir.Remove(lock); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return fiber.ErrConflict
+	return nil, fiber.ErrConflict
 }
 
-// abandoned reports whether an upload has made no progress for a while. A
-// live upload writes to its temp file at least every read_timeout, even in
-// another goftp process such as the old one during a restart.
-func (s *Server) abandoned(dir *os.Root, lock, tmp string) bool {
-	cutoff := time.Now().Add(-max(2*s.cfg.Server.ReadTimeout, time.Minute))
-	for _, name := range []string{lock, tmp} {
-		info, err := dir.Lstat(name)
-		if err == nil && info.ModTime().After(cutoff) || err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return false
+// holdLock refreshes the lock until the returned release removes it, and
+// only if it still belongs to the upload writing tmp.
+func (s *Server) holdLock(dir *os.Root, lock, tmp string) func() {
+	ticker := time.NewTicker(lockRefresh)
+	done, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			case now := <-ticker.C:
+				_ = dir.Chtimes(lock, now, now)
+			}
+		}
+	}()
+	return func() {
+		ticker.Stop()
+		close(done)
+		<-stopped
+		s.lockMu.Lock()
+		defer s.lockMu.Unlock()
+		if owner, err := readLock(dir, lock); err == nil && owner == tmp {
+			_ = dir.Remove(lock)
 		}
 	}
-	return true
 }

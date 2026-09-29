@@ -226,6 +226,13 @@ func TestFormUpload(t *testing.T) {
 	}
 	form, ctype = multipartForm(t,
 		formPart{field: "key", content: uploadKey},
+		formPart{field: "replace", content: "0"},
+		formPart{field: "file", filename: "a.txt", content: "changed"},
+	)
+	resp, _ = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
+	expectStatus(t, resp, http.StatusConflict)
+	form, ctype = multipartForm(t,
+		formPart{field: "key", content: uploadKey},
 		formPart{field: "replace", content: "1"},
 		formPart{field: "file", filename: "a.txt", content: "changed"},
 	)

@@ -48,8 +48,9 @@ a hidden `.goftp-*.part` file that is renamed into place only once complete;
 until then the previous version, if any, stays available. Other tools can
 hide files they write in place the same way: create `.<name>.lock` before
 writing `<name>` and delete it afterwards (such locks are always honored).
-Locks of goftp uploads that stopped making progress (crash, restart) are
-taken over by the next upload of that name.
+A running upload refreshes its lock every 15 seconds; a lock left behind by
+a goftp that stopped (crash, restart) is taken over by the next upload of
+that name once it is a minute old.
 
 ## Security notes
 
