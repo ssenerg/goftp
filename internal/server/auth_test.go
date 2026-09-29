@@ -368,7 +368,7 @@ func TestExpiredSession(t *testing.T) {
 	}
 	token := strings.Repeat("e", 43)
 	sum := sha256.Sum256([]byte(token))
-	if err := ta.store.CreateSession(context.Background(), sum[:], u.ID, time.Now().Add(-time.Second)); err != nil {
+	if err := ta.store.CreateSession(context.Background(), sum[:], u, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	resp, _ := f.do(t, "GET", "/", "Authorization", "Bearer "+token)
@@ -434,9 +434,8 @@ func TestSecureCookieBehindProxy(t *testing.T) {
 }
 
 func TestLoginLimiter(t *testing.T) {
-	f := newFixture(t, func(c *config.Config) {
-		c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute}
-	}).as("")
+	limited := func(c *config.Config) { c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute} }
+	f := newFixture(t, limited).as("")
 	name := userOfRole("user")
 	login := func(password string) *http.Response {
 		r, k, v := formBody("username", name, "password", password)
@@ -444,7 +443,7 @@ func TestLoginLimiter(t *testing.T) {
 		return resp
 	}
 
-	// Successes do not use up the budget.
+	// Successes do not use up the client's budget.
 	for i := 0; i < 5; i++ {
 		expectStatus(t, login(testPassword(name)), http.StatusSeeOther)
 	}
@@ -457,13 +456,39 @@ func TestLoginLimiter(t *testing.T) {
 	if ra, err := strconv.Atoi(resp.Header.Get("Retry-After")); err != nil || ra < 59 || ra > 60 {
 		t.Errorf("Retry-After %q", resp.Header.Get("Retry-After"))
 	}
-	// Wrong current passwords count as well.
-	resp, _ = f.as("user").send(t, "POST", passwordPath, strings.NewReader(`{"current_password":"x","new_password":"yyyyyyyyyyyyy"}`),
-		"Content-Type", "application/json")
-	expectStatus(t, resp, http.StatusTooManyRequests)
 	if n := len(f.logs.entries("login failed")); n != 3 {
 		t.Errorf("%d failed logins logged", n)
 	}
+
+	// Wrong current passwords count as well.
+	f = newFixture(t, limited).as("user")
+	for i := 0; i < 3; i++ {
+		resp, _ := f.send(t, "POST", passwordPath, strings.NewReader(`{"current_password":"x","new_password":"yyyyyyyyyyyyy"}`),
+			"Content-Type", "application/json")
+		expectStatus(t, resp, 403)
+	}
+	r, k, v := formBody("username", name, "password", testPassword(name))
+	resp, _ = f.as("").send(t, "POST", loginPath, r, k, v)
+	expectStatus(t, resp, http.StatusTooManyRequests)
+}
+
+// Password hashing is costly even for valid credentials, so a user's
+// sign-ins are limited too.
+func TestSignInLimiter(t *testing.T) {
+	defer func(n int) { signInsPerMinute = n }(signInsPerMinute)
+	signInsPerMinute = 3
+	f := newFixture(t).as("")
+	login := func(name string) *http.Response {
+		r, k, v := formBody("username", name, "password", testPassword(name))
+		resp, _ := f.send(t, "POST", loginPath, r, k, v)
+		return resp
+	}
+	name := userOfRole("admin")
+	for i := 0; i < 3; i++ {
+		expectStatus(t, login(name), http.StatusSeeOther)
+	}
+	expectStatus(t, login(name), http.StatusTooManyRequests)
+	expectStatus(t, login(userOfRole("operator")), http.StatusSeeOther)
 }
 
 // Concurrent guesses must not slip past the budget.

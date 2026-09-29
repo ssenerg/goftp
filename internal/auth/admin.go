@@ -11,7 +11,7 @@ import (
 
 var (
 	ErrInvalidSubject = fmt.Errorf("subject must be a role (%s), %q or \"user:<name>\"", strings.Join(Roles, ", "), Anonymous)
-	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "*", e.g. "/docs/*"`)
+	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "/*", e.g. "/docs/*"`)
 	ErrInvalidAction  = fmt.Errorf("action must be %s, %s, %s or *", ActRead, ActWrite, ActOverwrite)
 )
 
@@ -44,10 +44,9 @@ func (s *Service) CreateUser(ctx context.Context, username, role string) (string
 		return "", err
 	}
 	if _, err := s.enforcer.AddRoleForUser(Subject(username), role); err != nil {
-		if derr := s.store.DeleteUser(ctx, id); derr != nil {
-			err = errors.Join(err, derr)
-		}
-		return "", err
+		// The rule may have been stored even so.
+		_, rerr := s.enforcer.DeleteRolesForUser(Subject(username))
+		return "", errors.Join(err, rerr, s.store.DeleteUser(ctx, id))
 	}
 	return password, nil
 }
@@ -77,7 +76,8 @@ func (s *Service) ResetPassword(ctx context.Context, username string) (string, e
 	return password, nil
 }
 
-// SetRole replaces the user's roles with role.
+// SetRole replaces the user's roles with role. The new role is added
+// first, so that running servers never see the user without one.
 func (s *Service) SetRole(ctx context.Context, username, role string) error {
 	if err := checkRole(role); err != nil {
 		return err
@@ -87,11 +87,21 @@ func (s *Service) SetRole(ctx context.Context, username, role string) error {
 		return err
 	}
 	sub := Subject(u.Username)
-	if _, err := s.enforcer.DeleteRolesForUser(sub); err != nil {
+	if _, err := s.enforcer.AddRoleForUser(sub, role); err != nil {
 		return err
 	}
-	_, err = s.enforcer.AddRoleForUser(sub, role)
-	return err
+	roles, err := s.enforcer.GetRolesForUser(sub)
+	if err != nil {
+		return err
+	}
+	for _, r := range roles {
+		if r != role {
+			if _, err := s.enforcer.DeleteRoleForUser(sub, r); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // DeleteUser removes the user, their policies and sessions. Policies go
@@ -153,8 +163,10 @@ func checkRule(sub, obj, act string) error {
 	if !slices.Contains([]string{ActRead, ActWrite, ActOverwrite, "*"}, act) {
 		return ErrInvalidAction
 	}
-	base := strings.TrimSuffix(obj, "*")
-	if !strings.HasPrefix(base, "/") || strings.ContainsAny(base, "*\\") ||
+	// keyMatch compares the text before "*" as a plain prefix, so "/pub*"
+	// would also cover "/public-archive/".
+	base, wildcard := strings.CutSuffix(obj, "*")
+	if !strings.HasPrefix(base, "/") || (wildcard && !strings.HasSuffix(base, "/")) || strings.ContainsAny(base, "*\\") ||
 		strings.ContainsFunc(obj, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return ErrInvalidObject
 	}

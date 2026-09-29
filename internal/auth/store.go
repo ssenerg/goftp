@@ -29,8 +29,10 @@ type Store interface {
 	SetPassword(ctx context.Context, userID int64, passwordHash string, mustChange bool) error
 	DeleteUser(ctx context.Context, userID int64) error
 
-	// CreateSession may drop the user's oldest sessions to bound their number.
-	CreateSession(ctx context.Context, tokenHash []byte, userID int64, expires time.Time) error
+	// CreateSession starts a session for u, unless u was deleted or changed
+	// password since it was read (ErrNotFound). It may drop the user's
+	// oldest sessions to bound their number.
+	CreateSession(ctx context.Context, tokenHash []byte, u *User, expires time.Time) error
 	// SessionUser returns the user of an unexpired session.
 	SessionUser(ctx context.Context, tokenHash []byte) (*User, error)
 	DeleteSession(ctx context.Context, tokenHash []byte) error

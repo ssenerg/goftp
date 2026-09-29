@@ -29,8 +29,10 @@ services:
       GOFTP_DATABASE_URL: postgres://goftp@postgres:5432/goftp?sslmode=disable
       PGPASSWORD: ${POSTGRES_PASSWORD}
       GOFTP_UPLOAD_MAX_SIZE: ${GOFTP_UPLOAD_MAX_SIZE:-0}
+      GOFTP_SERVER_PROXY_HEADER: ${GOFTP_PROXY_HEADER:-}
+      GOFTP_SERVER_TRUSTED_PROXIES: ${GOFTP_TRUSTED_PROXIES:-}
     ports:
-      - "${GOFTP_PORT:-8080}:8080"
+      - "${GOFTP_BIND:-127.0.0.1}:${GOFTP_PORT:-8080}:8080"
     volumes:
       - files:/data
     read_only: true

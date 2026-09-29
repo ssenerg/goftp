@@ -106,10 +106,13 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	return nil
 }
 
-func (s *Store) CreateSession(_ context.Context, tokenHash []byte, userID int64, expires time.Time) error {
+func (s *Store) CreateSession(_ context.Context, tokenHash []byte, u *auth.User, expires time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.sessions[string(tokenHash)] = session{userID: userID, expires: expires}
+	if cur, ok := s.users[u.ID]; !ok || cur.PasswordHash != u.PasswordHash {
+		return auth.ErrNotFound
+	}
+	s.sessions[string(tokenHash)] = session{userID: u.ID, expires: expires}
 	return nil
 }
 

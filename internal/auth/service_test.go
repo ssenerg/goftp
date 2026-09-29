@@ -5,6 +5,8 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,7 +210,7 @@ func TestPolicyAdministration(t *testing.T) {
 		for _, rule := range [][3]string{
 			{"root", "/*", "read"}, {"user:X", "/*", "read"}, {"user", "docs/*", "read"}, {"user", "/a/../b", "read"},
 			{"user", "/a//b", "read"}, {"user", "/*/x", "read"}, {"user", "/a\\b", "read"}, {"user", "/a\nb", "read"},
-			{"user", "/a", "delete"}, {"user", "", "read"},
+			{"user", "/a", "delete"}, {"user", "", "read"}, {"anonymous", "/pub*", "read"}, {"user", "*", "read"},
 		} {
 			if _, err := svc.AddPolicy(rule[0], rule[1], rule[2]); err == nil {
 				t.Errorf("AddPolicy(%q) accepted", rule)
@@ -233,6 +235,57 @@ func TestPolicyAdministration(t *testing.T) {
 		}
 		if ok, _ := svc.RemovePolicy("anonymous", "/pub/*", "read"); ok {
 			t.Error("removed a missing rule")
+		}
+	})
+}
+
+// A password change must end the sessions of logins that were checking the
+// old password while it happened.
+func TestPasswordChangeEndsConcurrentLogins(t *testing.T) {
+	services(t, func(t *testing.T, svc *auth.Service) {
+		ctx := context.Background()
+		temp, err := svc.CreateUser(ctx, "victim", "user")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess, err := svc.Login(ctx, "victim", temp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const leaked = "leaked old password"
+		if sess, err = svc.ChangePassword(ctx, sess.User, temp, leaked); err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			stop   atomic.Bool
+			mu     sync.Mutex
+			tokens []string
+			wg     sync.WaitGroup
+		)
+		for range 4 {
+			wg.Go(func() {
+				for !stop.Load() {
+					if s, err := svc.Login(ctx, "victim", leaked); err == nil {
+						mu.Lock()
+						tokens = append(tokens, s.Token)
+						mu.Unlock()
+					}
+				}
+			})
+		}
+		time.Sleep(200 * time.Millisecond)
+		if _, err := svc.ChangePassword(ctx, sess.User, leaked, "a brand new password"); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		stop.Store(true)
+		wg.Wait()
+
+		for _, token := range tokens {
+			if _, err := svc.Authenticate(ctx, token); err == nil {
+				t.Fatalf("a session from the old password survived (%d logins)", len(tokens))
+			}
 		}
 	})
 }

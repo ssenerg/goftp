@@ -3,9 +3,15 @@ package cli
 import (
 	"bytes"
 	"context"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"goftp/internal/db/dbtest"
 )
@@ -96,7 +102,7 @@ func TestPolicyCommands(t *testing.T) {
 
 func TestUsageErrors(t *testing.T) {
 	t.Setenv("GOFTP_DATABASE_URL", "")
-	for _, args := range [][]string{{"usr"}, {"serve", "extra"}, {"--nope"}} {
+	for _, args := range [][]string{{"usr"}, {"serve", "extra"}, {"--nope"}, {"user", "delet", "bob"}, {"policy", "rm"}} {
 		if _, err := run(t, args...); err == nil {
 			t.Errorf("goftp %s succeeded", strings.Join(args, " "))
 		}
@@ -106,5 +112,66 @@ func TestUsageErrors(t *testing.T) {
 	}
 	if out := mustRun(t, "--help"); !strings.Contains(out, "user") || !strings.Contains(out, "policy") {
 		t.Errorf("help: %q", out)
+	}
+	if out := mustRun(t, "user"); !strings.Contains(out, "passwd") {
+		t.Errorf("user help: %q", out)
+	}
+}
+
+// Without a command, goftp serves until its context ends.
+func TestServe(t *testing.T) {
+	_, url := dbtest.Open(t)
+	t.Setenv("GOFTP_DATABASE_URL", url)
+	t.Setenv("GOFTP_LOG_LEVEL", "error")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte("served"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	temp := tempPassword.FindStringSubmatch(mustRun(t, "user", "add", "sam"))[1]
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Execute(ctx, []string{"--dir", dir, "--addr", addr}, io.Discard, io.Discard) }()
+
+	base := "http://" + addr
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		resp, err := http.Get(base + "/a.txt")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				t.Fatalf("anonymous download: %d", resp.StatusCode)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	resp, err := http.Post(base+"/.auth/login", "application/json", strings.NewReader(`{"username":"sam","password":"`+temp+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), `"must_change_password":true`) {
+		t.Errorf("login: %d %s", resp.StatusCode, body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve did not stop")
 	}
 }

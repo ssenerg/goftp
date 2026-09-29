@@ -23,9 +23,12 @@ docker compose exec goftp goftp user add alice --role superadmin
 `user add` prints a temporary password. Open http://localhost:8080, sign in
 and choose a new password. Files live in the `files` volume, the database
 in `pgdata`; to serve a host directory instead, mount it at `/data` (and
-make it writable by UID 65532, the image's user, for uploads). Put a
-TLS-terminating reverse proxy in front (or mount a certificate and set
-`GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`).
+make it writable by UID 65532, the image's user, for uploads).
+
+The port is only published on 127.0.0.1: put a TLS-terminating reverse
+proxy in front and set `GOFTP_PROXY_HEADER` and `GOFTP_TRUSTED_PROXIES` in
+`.env` (see [`.env.example`](.env.example)), or mount a certificate and set
+`GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`, then set `GOFTP_BIND=0.0.0.0`.
 
 ## Users and roles
 
@@ -125,7 +128,8 @@ that name once it is a minute old.
 - Passwords are hashed with Argon2id; only SHA-256 hashes of session tokens
   are stored.
 - Failed sign-ins (and wrong current passwords) are rate limited per client
-  (`limiter.*`). Behind a reverse proxy, set `server.proxy_header` and
+  (`limiter.*`), and each user can sign in at most 30 times a minute.
+  Behind a reverse proxy, set `server.proxy_header` and
   `server.trusted_proxies`, otherwise every client shares the proxy's
   budget and the server cannot tell that requests arrived over HTTPS.
 - Cross-site form posts and uploads are refused (`Sec-Fetch-Site`/`Origin`

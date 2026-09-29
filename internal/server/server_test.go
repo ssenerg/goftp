@@ -504,8 +504,8 @@ func TestAccessLog(t *testing.T) {
 	}
 }
 
-func TestFailureLimiterWindow(t *testing.T) {
-	l := newFailureLimiter(2, time.Minute)
+func TestRateLimiterWindow(t *testing.T) {
+	l := newRateLimiter(2, time.Minute)
 	now := time.Unix(1000, 0)
 	if l.attempt("a", true, now) != 0 || l.attempt("a", false, now) != 0 {
 		t.Fatal("blocked below the limit")
@@ -528,8 +528,8 @@ func TestFailureLimiterWindow(t *testing.T) {
 	}
 }
 
-func TestFailureLimiterBounded(t *testing.T) {
-	l := newFailureLimiter(1, time.Minute)
+func TestRateLimiterBounded(t *testing.T) {
+	l := newRateLimiter(1, time.Minute)
 	now := time.Unix(1000, 0)
 	for i := 0; i < maxTrackedClients+10; i++ {
 		l.attempt(strconv.Itoa(i), true, now)

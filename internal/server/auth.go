@@ -258,23 +258,55 @@ func (s *Server) readForm(c fiber.Ctx) (map[string]string, bool, error) {
 	return form, false, nil
 }
 
-// reserveAttempt counts a password check against the client's failure
-// budget before it runs, so concurrent guesses cannot exceed the budget.
-// The returned func refunds it after a success.
-func (s *Server) reserveAttempt(c fiber.Ctx) (refund func(), wait time.Duration) {
-	if s.limiter == nil {
-		return func() {}, 0
-	}
-	key := clientKey(c.IP())
-	if wait := s.limiter.attempt(key, true, time.Now()); wait > 0 {
+// signInsPerMinute bounds a user's successful password checks: hashing
+// costs as much for valid credentials as for guesses.
+var signInsPerMinute = 30
+
+// passwordCheck is a password check admitted by the rate limits.
+type passwordCheck struct {
+	s            *Server
+	client, user string
+}
+
+// checkPassword admits a password check for user from the client, or says
+// how long to wait. The check counts against the client's failure budget
+// before it runs, so concurrent guesses cannot exceed the budget.
+func (s *Server) checkPassword(c fiber.Ctx, user string) (*passwordCheck, time.Duration) {
+	now := time.Now()
+	p := &passwordCheck{s: s, user: auth.NormalizeUsername(user)}
+	if wait := s.signIns.attempt(p.user, false, now); wait > 0 {
 		return nil, wait
 	}
-	return func() { s.limiter.refund(key) }, 0
+	if s.limiter != nil {
+		p.client = clientKey(c.IP())
+		if wait := s.limiter.attempt(p.client, true, now); wait > 0 {
+			return nil, wait
+		}
+	}
+	return p, 0
+}
+
+// refund takes the check back from the client's failure budget.
+func (p *passwordCheck) refund() {
+	if p.s.limiter != nil {
+		p.s.limiter.refund(p.client)
+	}
+}
+
+// succeeded moves the check to the user's budget.
+func (p *passwordCheck) succeeded() {
+	p.refund()
+	p.s.signIns.attempt(p.user, true, time.Now())
 }
 
 func retryAfter(c fiber.Ctx, wait time.Duration) {
 	c.Set(fiber.HeaderRetryAfter, strconv.Itoa(int(math.Ceil(wait.Seconds()))))
 }
+
+const (
+	tooMany = "Too many attempts, try again later."
+	busy    = "The server is busy, try again in a moment."
+)
 
 type authPage struct {
 	page
@@ -305,22 +337,27 @@ func (s *Server) login(c fiber.Ctx) error {
 		return s.render(c, status, "login", authPage{page: s.page(c, "Sign in"), Error: msg, Next: next, Username: form["username"]})
 	}
 
-	refund, wait := s.reserveAttempt(c)
+	check, wait := s.checkPassword(c, form["username"])
 	if wait > 0 {
 		retryAfter(c, wait)
-		return fail(fiber.StatusTooManyRequests, "Too many failed attempts, try again later.")
+		return fail(fiber.StatusTooManyRequests, tooMany)
 	}
 	ctx, cancel := dbContext(c)
 	defer cancel()
 	sess, err := s.auth.Login(ctx, form["username"], form["password"])
-	if errors.Is(err, auth.ErrInvalidCredentials) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.log.Warn("login failed", zap.String("ip", c.IP()), zap.String("user", loggableName(form["username"])))
 		return fail(fiber.StatusUnauthorized, "Wrong username or password.")
-	}
-	refund()
-	if err != nil {
+	case errors.Is(err, auth.ErrBusy):
+		check.refund()
+		retryAfter(c, time.Second)
+		return fail(fiber.StatusServiceUnavailable, busy)
+	case err != nil:
+		check.refund()
 		return err
 	}
+	check.succeeded()
 	s.log.Info("login", zap.String("ip", c.IP()), zap.String("user", sess.User.Username))
 
 	if isJSON {
@@ -398,25 +435,30 @@ func (s *Server) changePassword(c fiber.Ctx) error {
 		return fail(fiber.StatusBadRequest, "The new passwords do not match.")
 	}
 
-	refund, wait := s.reserveAttempt(c)
+	check, wait := s.checkPassword(c, sess.user.Username)
 	if wait > 0 {
 		retryAfter(c, wait)
-		return fail(fiber.StatusTooManyRequests, "Too many failed attempts, try again later.")
+		return fail(fiber.StatusTooManyRequests, tooMany)
 	}
 	ctx, cancel := dbContext(c)
 	defer cancel()
 	changed, err := s.auth.ChangePassword(ctx, sess.user, current, password)
-	if errors.Is(err, auth.ErrInvalidCredentials) {
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
 		s.log.Warn("password change failed", zap.String("ip", c.IP()), zap.String("user", sess.user.Username))
 		return fail(fiber.StatusForbidden, "The current password is wrong.")
-	}
-	refund()
-	if errors.Is(err, auth.ErrWeakPassword) {
+	case errors.Is(err, auth.ErrBusy):
+		check.refund()
+		retryAfter(c, time.Second)
+		return fail(fiber.StatusServiceUnavailable, busy)
+	case errors.Is(err, auth.ErrWeakPassword):
+		check.succeeded()
 		return fail(fiber.StatusBadRequest, strings.ToUpper(err.Error()[:1])+err.Error()[1:]+".")
-	}
-	if err != nil {
+	case err != nil:
+		check.refund()
 		return err
 	}
+	check.succeeded()
 	s.log.Info("password changed", zap.String("ip", c.IP()), zap.String("user", sess.user.Username))
 
 	if sess.cookie {

@@ -19,7 +19,11 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	ErrSamePassword       = fmt.Errorf("%w: the new password must differ from the current one", ErrWeakPassword)
+	ErrBusy               = errors.New("too many password checks in progress")
 )
+
+// hashWait bounds how long a password check waits for a free hashing slot.
+var hashWait = 5 * time.Second
 
 // Service authenticates users with sessions and authorizes their requests
 // with Casbin.
@@ -47,9 +51,13 @@ func NewService(store Store, enforcer *casbin.SyncedEnforcer, sessionTTL time.Du
 func (s *Service) Enforcer() *casbin.SyncedEnforcer { return s.enforcer }
 
 func (s *Service) acquireHashing(ctx context.Context) (func(), error) {
+	t := time.NewTimer(hashWait)
+	defer t.Stop()
 	select {
 	case s.hashing <- struct{}{}:
 		return func() { <-s.hashing }, nil
+	case <-t.C:
+		return nil, ErrBusy
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
@@ -110,14 +118,19 @@ func (s *Service) Login(ctx context.Context, username, password string) (*Sessio
 	if !ok {
 		return nil, ErrInvalidCredentials
 	}
-	return s.newSession(ctx, u)
+	sess, err := s.newSession(ctx, u)
+	if errors.Is(err, ErrNotFound) {
+		// The password changed (or the user was deleted) meanwhile.
+		return nil, ErrInvalidCredentials
+	}
+	return sess, err
 }
 
 func (s *Service) newSession(ctx context.Context, u *User) (*Session, error) {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	sess := &Session{Token: base64.RawURLEncoding.EncodeToString(b), Expires: time.Now().Add(s.ttl), User: u}
-	if err := s.store.CreateSession(ctx, tokenHash(sess.Token), u.ID, sess.Expires); err != nil {
+	if err := s.store.CreateSession(ctx, tokenHash(sess.Token), u, sess.Expires); err != nil {
 		return nil, err
 	}
 	return sess, nil

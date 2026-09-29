@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/helmet"
@@ -36,7 +37,8 @@ type Server struct {
 	app       *fiber.App
 	root      *os.Root
 	rootPath  string
-	limiter   *failureLimiter
+	limiter   *rateLimiter // failed password checks per client
+	signIns   *rateLimiter // successful password checks per user
 	errEscape error
 	lockMu    sync.Mutex
 }
@@ -94,8 +96,9 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		HSTSExcludeSubdomains: true,
 	}))
 	if cfg.Limiter.MaxFailures > 0 {
-		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
+		s.limiter = newRateLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
+	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
 	s.app.Use(s.checkOrigin, s.identify, s.requirePasswordChange)
 	s.app.Get(loginPath, s.loginPage)
 	s.app.Post(loginPath, s.login)

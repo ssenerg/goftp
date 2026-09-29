@@ -80,6 +80,8 @@ func serve(ctx context.Context, cfg *config.Config) error {
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// A second signal during the graceful shutdown ends the process.
+	context.AfterFunc(ctx, stop)
 
 	pool, err := db.Open(ctx, cfg.Database.URL)
 	if err != nil {
@@ -163,6 +165,8 @@ func userCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "user",
 		Short: "Manage users",
+		Args:  cobra.NoArgs,
+		RunE:  help,
 	}
 	roles := strings.Join(auth.Roles, ", ")
 
@@ -260,6 +264,10 @@ func userCmd() *cobra.Command {
 	return cmd
 }
 
+// help is the action of command groups; with Args set, cobra reports
+// unknown subcommands as errors instead of printing help.
+func help(cmd *cobra.Command, _ []string) error { return cmd.Help() }
+
 func printPassword(cmd *cobra.Command, done, password string) {
 	cmd.Println(done)
 	cmd.Println("temporary password:", password)
@@ -283,6 +291,8 @@ func policyCmd() *cobra.Command {
 			auth.ActOverwrite + " (replace files) or *.\n" +
 			"Paths:    \"/docs/*\" covers /docs/ and everything below it; \"/docs/\" is just the listing.\n\n" +
 			"Roles inherit the rules of the roles below them: " + strings.Join(auth.Roles, " > ") + ".",
+		Args: cobra.NoArgs,
+		RunE: help,
 	}
 
 	list := &cobra.Command{

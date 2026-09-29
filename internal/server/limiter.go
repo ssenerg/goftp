@@ -9,10 +9,10 @@ import (
 // entry is evicted.
 const maxTrackedClients = 100_000
 
-// failureLimiter caps failed password checks per client within a fixed window.
-// Checking and counting happen under one lock, so concurrent guesses cannot
-// slip past the budget.
-type failureLimiter struct {
+// rateLimiter caps counted events, such as failed password checks, per key
+// within a fixed window. Checking and counting happen under one lock, so
+// concurrent guesses cannot slip past the budget.
+type rateLimiter struct {
 	max    int
 	window time.Duration
 
@@ -26,13 +26,13 @@ type failures struct {
 	reset time.Time
 }
 
-func newFailureLimiter(max int, window time.Duration) *failureLimiter {
-	return &failureLimiter{max: max, window: window, hits: make(map[string]*failures)}
+func newRateLimiter(max int, window time.Duration) *rateLimiter {
+	return &rateLimiter{max: max, window: window, hits: make(map[string]*failures)}
 }
 
 // attempt returns how long key is still blocked, or 0 if the attempt may
-// proceed, in which case a failed attempt is counted.
-func (l *failureLimiter) attempt(key string, failed bool, now time.Time) time.Duration {
+// proceed, in which case it is counted if count is set.
+func (l *rateLimiter) attempt(key string, count bool, now time.Time) time.Duration {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -43,7 +43,7 @@ func (l *failureLimiter) attempt(key string, failed bool, now time.Time) time.Du
 	if f != nil && f.count >= l.max {
 		return f.reset.Sub(now)
 	}
-	if !failed {
+	if !count {
 		return 0
 	}
 	if f == nil {
@@ -56,7 +56,7 @@ func (l *failureLimiter) attempt(key string, failed bool, now time.Time) time.Du
 }
 
 // evict drops expired entries once per window and makes room when full.
-func (l *failureLimiter) evict(now time.Time) {
+func (l *rateLimiter) evict(now time.Time) {
 	if !now.Before(l.sweep) || len(l.hits) >= maxTrackedClients {
 		for k, f := range l.hits {
 			if !now.Before(f.reset) {
@@ -75,7 +75,7 @@ func (l *failureLimiter) evict(now time.Time) {
 
 // refund takes back one counted failure, for an attempt that was counted
 // before it ran and then succeeded.
-func (l *failureLimiter) refund(key string) {
+func (l *rateLimiter) refund(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if f := l.hits[key]; f != nil && f.count > 0 {

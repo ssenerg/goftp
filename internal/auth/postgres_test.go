@@ -5,9 +5,15 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"net/url"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/casbin/casbin/v3"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
 	"goftp/internal/auth"
@@ -27,6 +33,10 @@ func TestPgSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dave, err := st.UserByName(ctx, "dave")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := st.CreateUser(ctx, "dave", "hash"); !errors.Is(err, auth.ErrExists) {
 		t.Errorf("duplicate: %v", err)
 	}
@@ -38,7 +48,7 @@ func TestPgSessions(t *testing.T) {
 	}
 
 	expired := tokenHash()
-	if err := st.CreateSession(ctx, expired, id, time.Now().Add(-time.Minute)); err != nil {
+	if err := st.CreateSession(ctx, expired, dave, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.SessionUser(ctx, expired); !errors.Is(err, auth.ErrNotFound) {
@@ -49,7 +59,7 @@ func TestPgSessions(t *testing.T) {
 	for range 105 {
 		h := tokenHash()
 		hashes = append(hashes, h)
-		if err := st.CreateSession(ctx, h, id, time.Now().Add(time.Hour)); err != nil {
+		if err := st.CreateSession(ctx, h, dave, time.Now().Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -64,7 +74,7 @@ func TestPgSessions(t *testing.T) {
 		t.Errorf("oldest session kept: %v", err)
 	}
 
-	if err := st.CreateSession(ctx, expired, id, time.Now().Add(-time.Minute)); err != nil {
+	if err := st.CreateSession(ctx, expired, dave, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.DeleteExpiredSessions(ctx); err != nil {
@@ -82,16 +92,7 @@ func TestWatchPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		auth.WatchPolicies(ctx, pool, server, zap.NewNop())
-		close(done)
-	}()
-	defer func() {
-		cancel()
-		<-done
-	}()
+	watch(t, pool, server)
 
 	cli, err := auth.NewPgEnforcer(pool)
 	if err != nil {
@@ -137,5 +138,162 @@ func TestWatchPolicies(t *testing.T) {
 	}
 	if got, _ := fresh.GetPolicy(); len(got) != 4 {
 		t.Errorf("policies after SavePolicy: %v", got)
+	}
+}
+
+// watch runs WatchPolicies for e until the test ends.
+func watch(t *testing.T, pool *pgxpool.Pool, e *casbin.SyncedEnforcer) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		auth.WatchPolicies(ctx, pool, e, zap.NewNop())
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+}
+
+// Running servers never see a user without a role while it changes.
+func TestSetRoleKeepsARole(t *testing.T) {
+	pool, _ := dbtest.Open(t)
+	server, err := auth.NewPgEnforcer(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	watch(t, pool, server)
+	e, err := auth.NewPgEnforcer(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := auth.NewService(auth.NewPgStore(pool), e, time.Hour)
+	if _, err := svc.CreateUser(context.Background(), "bob", "user"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for ok := false; !ok; ok, _ = server.Enforce(auth.Subject("bob"), "/x", auth.ActRead) {
+		if time.Now().After(deadline) {
+			t.Fatal("new user never allowed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var denied atomic.Int64
+	stop := make(chan struct{})
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if ok, _ := server.Enforce(auth.Subject("bob"), "/x", auth.ActRead); !ok {
+				denied.Add(1)
+			}
+		}
+	}()
+	for i := range 20 {
+		if err := svc.SetRole(context.Background(), "bob", []string{"operator", "user"}[i%2]); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	<-polled
+	if n := denied.Load(); n > 0 {
+		t.Errorf("bob was denied %d times while changing roles", n)
+	}
+	if svc.Role("bob") != "user" {
+		t.Errorf("roles %q", svc.Role("bob"))
+	}
+}
+
+// The listener's connection never returns to the pool, and does not
+// starve a pool of one.
+func TestWatchPoliciesLeavesPoolUsable(t *testing.T) {
+	_, raw := dbtest.Open(t)
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	q.Set("pool_max_conns", "1")
+	u.RawQuery = q.Encode()
+	pool, err := pgxpool.New(context.Background(), u.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	e, err := auth.NewPgEnforcer(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		auth.WatchPolicies(ctx, pool, e, zap.NewNop())
+		close(done)
+	}()
+	query := func(when string) {
+		qctx, qcancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer qcancel()
+		if _, err := pool.Exec(qctx, "SELECT 1"); err != nil {
+			t.Errorf("query %s: %v", when, err)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	query("while listening")
+	cancel()
+	<-done
+	for range 3 {
+		query("after listening")
+	}
+}
+
+// Casbin calls the batch and update methods of adapters without checking
+// that they exist.
+func TestAdapterBatchAndUpdate(t *testing.T) {
+	pool, _ := dbtest.Open(t)
+	e, err := auth.NewPgEnforcer(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := []func() (bool, error){
+		func() (bool, error) { return e.AddRolesForUser("user:a", []string{"user", "operator"}) },
+		func() (bool, error) {
+			return e.AddPolicies([][]string{{"user:a", "/a/*", "read"}, {"user:a", "/b/*", "read"}})
+		},
+		func() (bool, error) {
+			return e.UpdatePolicy([]string{"user:a", "/a/*", "read"}, []string{"user:a", "/a/*", "write"})
+		},
+		func() (bool, error) {
+			return e.UpdatePolicies([][]string{{"user:a", "/b/*", "read"}}, [][]string{{"user:a", "/c/*", "read"}})
+		},
+		func() (bool, error) {
+			return e.UpdateFilteredPolicies([][]string{{"user:a", "/d/*", "read"}}, 1, "/c/*")
+		},
+		func() (bool, error) { return e.RemovePolicies([][]string{{"user:a", "/a/*", "write"}}) },
+	}
+	for i, step := range steps {
+		if ok, err := step(); !ok || err != nil {
+			t.Fatalf("step %d: %v, %v", i, ok, err)
+		}
+	}
+	stored, err := auth.NewPgEnforcer(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []*casbin.SyncedEnforcer{e, stored} {
+		perms, _ := e.GetFilteredPolicy(0, "user:a")
+		roles, _ := e.GetRolesForUser("user:a")
+		slices.Sort(roles)
+		if len(perms) != 1 || strings.Join(perms[0], " ") != "user:a /d/* read" || strings.Join(roles, " ") != "operator user" {
+			t.Errorf("policies %v, roles %v", perms, roles)
+		}
 	}
 }

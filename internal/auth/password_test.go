@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHashAndVerify(t *testing.T) {
@@ -68,5 +70,25 @@ func TestTemporaryPassword(t *testing.T) {
 	a, b := TemporaryPassword(), TemporaryPassword()
 	if a == b || len(a) < MinPasswordLength || CheckPassword("someone", a) != nil {
 		t.Errorf("temporary passwords %q %q", a, b)
+	}
+}
+
+// Password checks give up when all hashing slots stay busy.
+func TestHashingSlots(t *testing.T) {
+	defer func(d time.Duration) { hashWait = d }(hashWait)
+	hashWait = 20 * time.Millisecond
+	s := &Service{hashing: make(chan struct{}, 1)}
+	release, err := s.acquireHashing(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.acquireHashing(context.Background()); !errors.Is(err, ErrBusy) {
+		t.Errorf("second check: %v", err)
+	}
+	release()
+	if release, err = s.acquireHashing(context.Background()); err != nil {
+		t.Errorf("after release: %v", err)
+	} else {
+		release()
 	}
 }
