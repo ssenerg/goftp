@@ -1,0 +1,32 @@
+# Every key can also be set via environment (GOFTP_ prefix, "." -> "_",
+# e.g. GOFTP_LOG_LEVEL=debug). Flags (--dir, --addr, --query) win over both.
+
+dir: /srv/files          # directory to serve
+addr: ":8080"            # listen address (IPv4 and IPv6)
+query: key               # query parameter carrying the access key
+
+# Prefer the SECURE_KEY / GOFTP_SECURE_KEY environment variable. If set here,
+# keep this file private (chmod 600). Minimum 16 characters.
+# secure_key: ""
+
+log:
+  level: info            # debug, info, warn, error
+  format: json           # json or console
+
+server:
+  read_timeout: 10s      # time allowed to read a request (units required)
+  write_timeout: 1m      # max time without write progress during a response
+  idle_timeout: 2m       # keep-alive idle time
+  shutdown_timeout: 10s  # grace period for in-flight requests on shutdown
+  # Behind a reverse proxy, name a header the proxy overwrites (not appends)
+  # and list the proxy addresses, e.g. nginx: proxy_set_header X-Real-IP $remote_addr;
+  proxy_header: ""
+  trusted_proxies: []    # e.g. ["127.0.0.1", "10.0.0.0/8"]
+
+tls:                     # serve HTTPS directly (enables HSTS)
+  cert_file: ""
+  key_file: ""
+
+limiter:                 # per-client budget of wrong access keys
+  max_failures: 20       # 0 disables
+  window: 1m
