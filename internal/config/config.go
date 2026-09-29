@@ -48,6 +48,7 @@ type ServerConfig struct {
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
 	ProxyHeader     string        `mapstructure:"proxy_header"`
 	TrustedProxies  []string      `mapstructure:"trusted_proxies"`
+	MaxConnsPerIP   int           `mapstructure:"max_conns_per_ip"`
 }
 
 type TLSConfig struct {
@@ -166,6 +167,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("server.shutdown_timeout", 10*time.Second)
 	v.SetDefault("server.proxy_header", "")
 	v.SetDefault("server.trusted_proxies", []string{})
+	v.SetDefault("server.max_conns_per_ip", 0)
 	v.SetDefault("tls.cert_file", "")
 	v.SetDefault("tls.key_file", "")
 	v.SetDefault("limiter.max_failures", 20)
@@ -213,6 +215,9 @@ func (c *Config) normalize() error {
 	s.TrustedProxies = proxies
 	if s.ProxyHeader != "" && len(s.TrustedProxies) == 0 {
 		errs = append(errs, errors.New("server.proxy_header requires server.trusted_proxies"))
+	}
+	if s.MaxConnsPerIP < 0 {
+		errs = append(errs, errors.New("server.max_conns_per_ip must not be negative"))
 	}
 
 	if (c.TLS.CertFile == "") != (c.TLS.KeyFile == "") {

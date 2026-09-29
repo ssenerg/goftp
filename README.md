@@ -145,6 +145,9 @@ goftp starts again.
   budget and the server cannot tell that requests arrived over HTTPS.
 - Cross-site form posts and uploads are refused (`Sec-Fetch-Site`/`Origin`
   checks, `SameSite=Lax` cookies).
+- Concurrent connections are capped to fit the open file limit. When
+  clients connect directly rather than through a proxy, also cap what one
+  client may hold with `server.max_conns_per_ip` (`GOFTP_MAX_CONNS_PER_IP`).
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory and do not lead into a dotfile or dot-directory.
 

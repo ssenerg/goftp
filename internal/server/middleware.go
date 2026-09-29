@@ -83,6 +83,8 @@ func bodySize(c fiber.Ctx) int64 {
 func (s *Server) writeAccess(a access, bytes int64, err error) {
 	level := zapcore.InfoLevel
 	switch {
+	case a.status == fiber.StatusNotImplemented:
+		// An unknown method: the client's mistake, not the server's.
 	case a.status >= fiber.StatusInternalServerError:
 		level = zapcore.ErrorLevel
 	case a.status == fiber.StatusRequestTimeout:

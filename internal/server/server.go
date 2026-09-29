@@ -70,6 +70,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		ReadBufferSize:    readBufferSize,
 		ReduceMemoryUsage: true,
+		Concurrency:       maxConns(),
 		// Uploads are streamed to disk instead of buffered in memory.
 		StreamRequestBody:            true,
 		DisablePreParseMultipartForm: true,
@@ -166,6 +167,10 @@ func (s *Server) listen() (net.Listener, error) {
 	ln, err := net.Listen(fiber.NetworkTCP, s.cfg.Addr)
 	if err != nil {
 		return nil, err
+	}
+	ln = &retryListener{Listener: ln, log: s.log}
+	if n := s.cfg.Server.MaxConnsPerIP; n > 0 {
+		ln = newPerClientListener(ln, n)
 	}
 	if s.cfg.TLS.CertFile == "" {
 		return ln, nil

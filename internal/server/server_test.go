@@ -508,6 +508,12 @@ func TestAccessLog(t *testing.T) {
 	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
 		t.Errorf("access log:\n got %q\nwant %q (+ listing)", got, want)
 	}
+	// Anyone can send unknown methods: that is no server error.
+	for _, e := range f.logs.entries("request") {
+		if e["method"] == "PROPFIND" && e["level"] != "info" {
+			t.Errorf("unknown method logged at level %v", e["level"])
+		}
+	}
 	if strings.Contains(f.logs.raw(), f.token) || strings.Contains(f.logs.raw(), "q=1") {
 		t.Error("session token or query string leaked into logs")
 	}

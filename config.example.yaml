@@ -26,6 +26,9 @@ server:
   # The proxy should also set X-Forwarded-Proto, so HTTPS is recognized.
   proxy_header: ""
   trusted_proxies: []    # e.g. ["127.0.0.1", "10.0.0.0/8"]
+  # Connections one client may hold at once (IPv6 clients: per /64), e.g.
+  # 100 when clients connect directly; behind a proxy, limit them there.
+  max_conns_per_ip: 0    # 0 = no limit
 
 tls:                     # serve HTTPS directly (enables HSTS)
   cert_file: ""
