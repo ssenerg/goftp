@@ -178,9 +178,16 @@ func TestLoginForm(t *testing.T) {
 		}
 	}
 
-	r, k, v = formBody("username", "nobody", "password", "x")
-	f.send(t, "POST", loginPath, r, k, v)
-	if e := f.logs.entries("login failed"); len(e) != 2 || e[1]["user"] != "nobody" || !strings.HasSuffix(e[1]["error"].(string), ": no such user") {
+	// Names that match no user are not logged: people sometimes type their
+	// password, e.g. a temporary one, into the name field.
+	for _, typed := range []string{"nobody", "IPWOFW7TNK2EK4PBA344NZDOQZ"} {
+		r, k, v = formBody("username", typed, "password", "x")
+		f.send(t, "POST", loginPath, r, k, v)
+		if strings.Contains(strings.ToLower(f.logs.raw()), strings.ToLower(typed)) {
+			t.Errorf("unknown name %q logged", typed)
+		}
+	}
+	if e := f.logs.entries("login failed"); len(e) != 3 || e[2]["user"] != "(unknown)" || !strings.HasSuffix(e[2]["error"].(string), ": no such user") {
 		t.Errorf("failed logins logged: %v", e)
 	}
 
@@ -421,22 +428,47 @@ func TestCrossOriginRequests(t *testing.T) {
 }
 
 func TestSecureCookieBehindProxy(t *testing.T) {
-	f := newFixture(t, func(c *config.Config) {
-		c.Server.ProxyHeader = "X-Real-IP"
-		c.Server.TrustedProxies = []string{"0.0.0.0"}
-	}).as("")
 	name := userOfRole("user")
+	for setup, mutate := range map[string]func(*config.Config){
+		"proxy header": func(c *config.Config) {
+			c.Server.ProxyHeader = "X-Forwarded-For"
+			c.Server.TrustedProxies = []string{"0.0.0.0"}
+		},
+		// HTTPS is recognized from a trusted proxy without a proxy header too.
+		"trusted proxy only": func(c *config.Config) { c.Server.TrustedProxies = []string{"0.0.0.0"} },
+	} {
+		f := newFixture(t, mutate).as("")
+		r, k, v := formBody("username", name, "password", testPassword(name))
+		resp, _ := f.send(t, "POST", loginPath, r, k, v, "X-Forwarded-Proto", "https")
+		c := cookieOf(resp, secureCookieName)
+		if c == nil || !c.Secure || !c.HttpOnly || c.Path != "/" || c.Domain != "" {
+			t.Fatalf("%s: cookie %+v", setup, resp.Cookies())
+		}
+		resp, _ = f.do(t, "GET", "/", "Cookie", secureCookieName+"="+c.Value, "X-Forwarded-Proto", "https")
+		expectStatus(t, resp, 200)
+		if resp.Header.Get("Strict-Transport-Security") == "" {
+			t.Errorf("%s: no HSTS over HTTPS", setup)
+		}
+		// Over plain HTTP the secure cookie is not honored.
+		resp, _ = f.do(t, "GET", "/", "Cookie", secureCookieName+"="+c.Value)
+		expectStatus(t, resp, 401)
+		if resp.Header.Get("Strict-Transport-Security") != "" {
+			t.Errorf("%s: HSTS over plain HTTP", setup)
+		}
+	}
+
+	// Without a trusted proxy, clients cannot claim HTTPS.
+	f := newFixture(t).as("")
 	r, k, v := formBody("username", name, "password", testPassword(name))
 	resp, _ := f.send(t, "POST", loginPath, r, k, v, "X-Forwarded-Proto", "https")
-	c := cookieOf(resp, secureCookieName)
-	if c == nil || !c.Secure || !c.HttpOnly || c.Path != "/" || c.Domain != "" {
-		t.Fatalf("cookie %+v", resp.Cookies())
+	if cookieOf(resp, cookieName) == nil || resp.Header.Get("Strict-Transport-Security") != "" {
+		t.Errorf("untrusted X-Forwarded-Proto believed: %v", resp.Header)
 	}
-	resp, _ = f.do(t, "GET", "/", "Cookie", secureCookieName+"="+c.Value, "X-Forwarded-Proto", "https")
-	expectStatus(t, resp, 200)
-	// Over plain HTTP the secure cookie is not honored.
-	resp, _ = f.do(t, "GET", "/", "Cookie", secureCookieName+"="+c.Value)
-	expectStatus(t, resp, 401)
+	// That is logged, once.
+	f.do(t, "GET", "/", "X-Forwarded-For", "203.0.113.9")
+	if n := len(f.logs.entries("ignoring proxy headers from an untrusted address; behind a reverse proxy, set server.proxy_header and server.trusted_proxies")); n != 1 {
+		t.Errorf("untrusted proxy headers noted %d times", n)
+	}
 }
 
 func TestLoginLimiter(t *testing.T) {
@@ -574,7 +606,8 @@ func TestPolicies(t *testing.T) {
 			t.Errorf("bob's listing: %s shown = %v", name, !want)
 		}
 	}
-	for target, want := range map[string]int{"/shared/s.txt": 200, "/private/x.txt": 403, "/private/nope": 403, "/top.txt": 403, "/public/p.txt": 200} {
+	// The rule for a folder /top.txt/ does not reveal that a file is there.
+	for target, want := range map[string]int{"/shared/s.txt": 200, "/private/x.txt": 403, "/private/nope": 403, "/top.txt": 404, "/public/p.txt": 200} {
 		if resp, _ := bob.do(t, "GET", target); resp.StatusCode != want {
 			t.Errorf("bob GET %s: %d, want %d", target, resp.StatusCode, want)
 		}

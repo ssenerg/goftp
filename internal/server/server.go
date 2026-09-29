@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -43,12 +44,17 @@ type Server struct {
 	signIns   *rateLimiter // successful password checks per user
 	errEscape error
 	lockMu    sync.Mutex
+	// proxyNoted is set once untrusted proxy headers have been logged.
+	proxyNoted atomic.Bool
 }
 
 func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
 	rootPath, err := filepath.EvalSymlinks(cfg.Dir)
 	if err != nil {
 		return nil, err
+	}
+	if filepath.Dir(rootPath) == rootPath {
+		return nil, fmt.Errorf("refusing to serve the whole file system (%s): set dir to a folder", rootPath)
 	}
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {
@@ -70,21 +76,20 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		ReadBufferSize:    readBufferSize,
 		ReduceMemoryUsage: true,
+		Concurrency:       maxConns(),
 		// Uploads are streamed to disk instead of buffered in memory.
 		StreamRequestBody:            true,
 		DisablePreParseMultipartForm: true,
 		CaseSensitive:                true,
 		StrictRouting:                true,
-		ProxyHeader:                  cfg.Server.ProxyHeader,
-		TrustProxy:                   cfg.Server.ProxyHeader != "",
-		TrustProxyConfig:             fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
-		EnableIPValidation:           true,
+		// Forwarded headers (the proxy header, X-Forwarded-Proto) are only
+		// believed from these proxies.
+		ProxyHeader:        cfg.Server.ProxyHeader,
+		TrustProxy:         len(cfg.Server.TrustedProxies) > 0,
+		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
+		EnableIPValidation: true,
 	})
 
-	hsts := 0
-	if cfg.TLS.CertFile != "" {
-		hsts = 365 * 24 * 60 * 60
-	}
 	panics := recover.Config{EnableStackTrace: true, StackTraceHandler: s.logPanic}
 	// The outer recover guards the logger; the inner one turns handler
 	// panics into logged 500s.
@@ -94,14 +99,15 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Use(helmet.New(helmet.Config{
 		XFrameOptions:         "DENY",
 		ContentSecurityPolicy: contentSecurityPolicy,
-		HSTSMaxAge:            hsts,
+		// Sent over HTTPS only, including from a trusted proxy.
+		HSTSMaxAge:            365 * 24 * 60 * 60,
 		HSTSExcludeSubdomains: true,
 	}))
 	if cfg.Limiter.MaxFailures > 0 {
 		s.limiter = newRateLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
 	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
-	s.app.Use(s.checkOrigin, s.identify, s.requirePasswordChange)
+	s.app.Use(s.noteProxyHeaders, s.checkOrigin, s.identify, s.requirePasswordChange)
 	s.app.Get(loginPath, s.loginPage)
 	s.app.Post(loginPath, s.login)
 	s.app.Post(logoutPath, s.logout)
@@ -130,6 +136,15 @@ func (s *Server) Listen(ctx context.Context) error {
 		zap.String("dir", s.cfg.Dir),
 		zap.Bool("tls", s.cfg.TLS.CertFile != ""))
 
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		if n := s.removeLeftovers(ctx); n > 0 {
+			s.log.Info("removed leftovers of interrupted uploads", zap.Int("files", n))
+		}
+	}()
+	defer func() { <-swept }()
+
 	served := make(chan error, 1)
 	go func() {
 		served <- s.app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true})
@@ -157,6 +172,10 @@ func (s *Server) listen() (net.Listener, error) {
 	ln, err := net.Listen(fiber.NetworkTCP, s.cfg.Addr)
 	if err != nil {
 		return nil, err
+	}
+	ln = &retryListener{Listener: ln, log: s.log}
+	if n := s.cfg.Server.MaxConnsPerIP; n > 0 {
+		ln = newPerClientListener(ln, n)
 	}
 	if s.cfg.TLS.CertFile == "" {
 		return ln, nil

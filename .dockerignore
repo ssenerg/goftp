@@ -4,3 +4,8 @@
 *.test
 Dockerfile
 docker-compose.yml
+.claude
+.env.*
+config.yaml
+*.pem
+*.key

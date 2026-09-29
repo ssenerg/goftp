@@ -3,12 +3,15 @@
 package server
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"goftp/internal/auth"
 )
 
 func TestSymlinks(t *testing.T) {
@@ -142,5 +145,134 @@ func TestUploadIntoHiddenDirViaSymlink(t *testing.T) {
 	entries, _ := os.ReadDir(filepath.Join(f.dir, ".git"))
 	if len(entries) != 1 {
 		t.Errorf("files written into .git: %v", entries)
+	}
+}
+
+// A symlink never grants more than the rules of where it leads: visitors
+// need access to both the path they ask for and the entry's real path.
+func TestSymlinksFollowTargetRules(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "public/readme.txt", "public")
+	f.write(t, "private/secret.txt", "TOP SECRET")
+	f.write(t, "private/docs/a.txt", "TOP SECRET")
+	f.write(t, "shared/open.txt", "shared")
+	f.write(t, "incoming/x.txt", "x")
+	f.write(t, "protected/keep.txt", "keep")
+	for name, target := range map[string]string{
+		"public/ok.txt":     "readme.txt",
+		"public/link.txt":   "../private/secret.txt",
+		"public/linkdir":    "../private/docs",
+		"public/shared":     "../shared",
+		"incoming/esc":      "../protected",
+		"incoming/incoming": ".",
+	} {
+		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rule := range [][]string{
+		{"/public/*", auth.ActRead},
+		{"/shared/*", auth.ActRead},
+		{"/incoming/*", auth.ActWrite},
+	} {
+		if _, err := ta.svc.AddPolicy(auth.Anonymous, rule[0], rule[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anon := f.as("")
+
+	for p, want := range map[string]int{
+		"/public/readme.txt":      200,
+		"/public/ok.txt":          200,
+		"/public/shared/open.txt": 200,
+		"/public/link.txt":        404,
+		"/public/linkdir/":        404,
+		"/public/linkdir/a.txt":   404,
+		"/public/linkdir":         404,
+	} {
+		if resp, body := anon.do(t, "GET", p); resp.StatusCode != want || strings.Contains(body, "SECRET") {
+			t.Errorf("GET %s: status %d, want %d", p, resp.StatusCode, want)
+		}
+	}
+	_, body := anon.do(t, "GET", "/public/")
+	for _, want := range []string{`href="/public/readme.txt"`, `href="/public/ok.txt"`, `href="/public/shared/"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("listing lacks %s", want)
+		}
+	}
+	for _, hidden := range []string{"link.txt", "linkdir"} {
+		if strings.Contains(body, hidden) {
+			t.Errorf("listing shows %s, which leads where the visitor may not go", hidden)
+		}
+	}
+
+	// Writes through a symlinked folder need the rights of its target too.
+	if resp, _ := anon.send(t, "PUT", "/incoming/new.txt", strings.NewReader("new")); resp.StatusCode != http.StatusCreated {
+		t.Errorf("PUT into /incoming/: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.send(t, "PUT", "/incoming/incoming/same.txt", strings.NewReader("same")); resp.StatusCode != http.StatusCreated {
+		t.Errorf("PUT through a link to the same folder: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.send(t, "PUT", "/incoming/esc/planted.txt", strings.NewReader("x")); resp.StatusCode < 400 {
+		t.Errorf("PUT through link: %d", resp.StatusCode)
+	}
+	form, ctype := multipartForm(t, formPart{field: "file", filename: "planted2.txt", content: "x"})
+	if resp, _ := anon.send(t, "POST", "/incoming/esc/", form, "Content-Type", ctype); resp.StatusCode < 400 {
+		t.Errorf("form upload through link: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.send(t, "POST", "/incoming/esc/", strings.NewReader("folder=planted3"), "Content-Type", "application/x-www-form-urlencoded"); resp.StatusCode < 400 {
+		t.Errorf("mkdir through link: %d", resp.StatusCode)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(f.dir, "protected")); len(entries) != 1 {
+		t.Errorf("written through the link: %v", entries)
+	}
+
+	// With rights on both ends, links work as before.
+	if resp, _ := f.as("operator").send(t, "PUT", "/incoming/esc/allowed.txt", strings.NewReader("ok")); resp.StatusCode != http.StatusCreated {
+		t.Errorf("operator PUT through link: %d", resp.StatusCode)
+	}
+	if resp, _ := f.as("user").do(t, "GET", "/public/link.txt"); resp.StatusCode != 200 {
+		t.Errorf("user GET through link: %d", resp.StatusCode)
+	}
+}
+
+// A folder another tool is writing in place is hidden with everything in
+// it, and so are symlinks leading into locked entries.
+func TestLockedFolderHidesContents(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, "busy/partial.bin", "half")
+	f.write(t, ".busy.lock", "")
+	f.write(t, "file.txt", "half")
+	f.write(t, ".file.txt.lock", "")
+	f.write(t, "free.txt", "done")
+	for name, target := range map[string]string{"alias": "file.txt", "aliasdir": "busy"} {
+		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	op := f.as("operator")
+	for _, p := range []string{"/busy/", "/busy/partial.bin", "/file.txt", "/alias", "/aliasdir/", "/aliasdir/partial.bin"} {
+		if resp, _ := op.do(t, "GET", p); resp.StatusCode != 404 {
+			t.Errorf("GET %s: %d", p, resp.StatusCode)
+		}
+	}
+	if resp, _ := op.do(t, "GET", "/free.txt"); resp.StatusCode != 200 {
+		t.Errorf("GET /free.txt: %d", resp.StatusCode)
+	}
+	_, body := op.do(t, "GET", "/")
+	for _, hidden := range []string{"busy", "file.txt", "alias"} {
+		if strings.Contains(body, `href="/`+hidden) {
+			t.Errorf("listing shows %s", hidden)
+		}
+	}
+	if resp, _ := op.send(t, "PUT", "/busy/new.bin", strings.NewReader("x")); resp.StatusCode < 400 {
+		t.Errorf("PUT into locked folder: %d", resp.StatusCode)
+	}
+	if resp, _ := op.send(t, "POST", "/busy/", strings.NewReader("folder=sub"), "Content-Type", "application/x-www-form-urlencoded"); resp.StatusCode < 400 {
+		t.Errorf("mkdir in locked folder: %d", resp.StatusCode)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(f.dir, "busy")); len(entries) != 1 {
+		t.Errorf("written into the locked folder: %v", entries)
 	}
 }

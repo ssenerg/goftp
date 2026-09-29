@@ -83,6 +83,8 @@ func bodySize(c fiber.Ctx) int64 {
 func (s *Server) writeAccess(a access, bytes int64, err error) {
 	level := zapcore.InfoLevel
 	switch {
+	case a.status == fiber.StatusNotImplemented:
+		// An unknown method: the client's mistake, not the server's.
 	case a.status >= fiber.StatusInternalServerError:
 		level = zapcore.ErrorLevel
 	case a.status == fiber.StatusRequestTimeout:
@@ -127,6 +129,7 @@ func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 		c.Set(fiber.HeaderAllow, allowedMethods)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
+	c.Set(fiber.HeaderCacheControl, "no-store")
 	err = nil
 	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) ||
 		s.render(c, code, "error", s.errorPage(c, code, detail)) != nil {
@@ -207,4 +210,20 @@ func clientKey(ip string) string {
 		return strings.Clone(ip)
 	}
 	return prefix.String()
+}
+
+// noteProxyHeaders warns once about forwarding headers from an untrusted
+// address: behind a proxy that goftp does not know of, all clients share
+// the proxy's address, and so one budget of failed sign-ins.
+func (s *Server) noteProxyHeaders(c fiber.Ctx) error {
+	if !s.proxyNoted.Load() && !c.IsProxyTrusted() {
+		for _, h := range []string{fiber.HeaderXForwardedFor, "X-Real-Ip", "Forwarded"} {
+			if c.Get(h) != "" && s.proxyNoted.CompareAndSwap(false, true) {
+				s.log.Warn("ignoring proxy headers from an untrusted address; behind a reverse proxy, set server.proxy_header and server.trusted_proxies",
+					zap.String("header", h), zap.String("from", c.IP()))
+				break
+			}
+		}
+	}
+	return c.Next()
 }

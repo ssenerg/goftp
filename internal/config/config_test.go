@@ -72,7 +72,7 @@ func TestLoadPrecedence(t *testing.T) {
 	t.Setenv("GOFTP_SERVER_WRITE_TIMEOUT", "5s")
 	t.Setenv("GOFTP_LIMITER_MAX_FAILURES", "7")
 	t.Setenv("GOFTP_SERVER_PROXY_HEADER", "X-Real-IP")
-	t.Setenv("GOFTP_SERVER_TRUSTED_PROXIES", "10.0.0.1, 10.1.0.0/16")
+	t.Setenv("GOFTP_SERVER_TRUSTED_PROXIES", "10.0.0.1, 10.1.2.3/16, FD00::1, ::ffff:10.0.0.2")
 
 	cfg, err := load("--addr", ":7000")
 	if err != nil {
@@ -84,7 +84,8 @@ func TestLoadPrecedence(t *testing.T) {
 	if cfg.Auth.SessionTTL != 30*time.Minute || cfg.Log.Level != "debug" || cfg.Server.WriteTimeout != 5*time.Second || cfg.Limiter.MaxFailures != 7 {
 		t.Errorf("env overrides not applied: %+v", cfg)
 	}
-	if got := strings.Join(cfg.Server.TrustedProxies, "|"); got != "10.0.0.1|10.1.0.0/16" {
+	// Canonical, as Fiber compares addresses by their text.
+	if got := strings.Join(cfg.Server.TrustedProxies, "|"); got != "10.0.0.1|10.1.0.0/16|fd00::1|10.0.0.2" {
 		t.Errorf("trusted proxies = %q", got)
 	}
 }
@@ -138,6 +139,9 @@ func TestLoadErrors(t *testing.T) {
 		{"empty dir", nil, []string{"--dir", ""}, "dir must not be empty"},
 		{"proxy without trust", map[string]string{"GOFTP_SERVER_PROXY_HEADER": "X-Real-IP"}, nil, "requires server.trusted_proxies"},
 		{"bad proxy", map[string]string{"GOFTP_SERVER_TRUSTED_PROXIES": "nope"}, nil, "invalid IP or CIDR"},
+		{"trust everyone", map[string]string{"GOFTP_SERVER_TRUSTED_PROXIES": "10.0.0.1,0.0.0.0/0"}, nil, "every client"},
+		{"trust everyone v6", map[string]string{"GOFTP_SERVER_TRUSTED_PROXIES": "::/0"}, nil, "every client"},
+		{"negative conns", map[string]string{"GOFTP_SERVER_MAX_CONNS_PER_IP": "-1"}, nil, "must not be negative"},
 		{"half tls", map[string]string{"GOFTP_TLS_CERT_FILE": "cert.pem"}, nil, "must be set together"},
 		{"zero timeout", map[string]string{"GOFTP_SERVER_READ_TIMEOUT": "0s"}, nil, "must be positive"},
 		{"unitless timeout", nil, []string{"--config", unitless}, "needs a unit"},

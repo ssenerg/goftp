@@ -285,3 +285,78 @@ func TestLockHeartbeatAndOwnership(t *testing.T) {
 		t.Errorf("upload removed a lock it does not own: %q", got)
 	}
 }
+
+// Forms are small: trickling one, chunk by chunk, cannot hold a connection
+// beyond read_timeout the way a slow upload may.
+func TestSlowFormTimesOut(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
+	addr, _ := startServer(t, f)
+	// Folder forms are only read from visitors who may create folders.
+	for target, auth := range map[string]string{"/.auth/login": "", "/": "Authorization: Bearer " + f.as("operator").token + "\r\n"} {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: t\r\n%sContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n", target, auth)
+		start := time.Now()
+		for time.Since(start) < 3*time.Second {
+			if _, err := io.WriteString(conn, "1\r\nx\r\n"); err != nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if held := time.Since(start); held > 1500*time.Millisecond {
+			t.Errorf("POST %s: a trickled form held the connection for %v", target, held.Round(time.Millisecond))
+		}
+		if resp, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
+			t.Errorf("POST %s: %v", target, err)
+		} else if resp.StatusCode != http.StatusRequestTimeout {
+			t.Errorf("POST %s: status %d, want 408", target, resp.StatusCode)
+		}
+		_ = conn.Close()
+	}
+}
+
+// Uploads cut off by a crash or a forced shutdown leave their lock and temp
+// file behind. Starting removes them, but nothing that may still be in use.
+func TestStartRemovesLeftovers(t *testing.T) {
+	f := newFixture(t)
+	old := time.Now().Add(-2 * lockExpiry)
+	stale := func(name, content string) {
+		f.write(t, name, content)
+		if err := os.Chtimes(filepath.Join(f.dir, filepath.FromSlash(name)), old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	part := func(id string) string { return tempPrefix + id + tempSuffix }
+	stale("sub/"+lockName("crashed.iso"), lockMagic+part("A")+"\n")
+	stale("sub/"+part("A"), "partial")
+	stale("sub/deeper/"+part("B"), "orphan")
+	f.write(t, "sub/"+lockName("running.iso"), lockMagic+part("C")+"\n")
+	stale("sub/"+part("C"), "still being written")
+	f.write(t, "sub/"+part("D"), "just started")
+	stale("sub/"+lockName("other.txt"), "another tool's lock")
+	stale(".git/"+part("E"), "not ours to judge")
+	f.write(t, "sub/crashed.iso", "previous version")
+
+	addr, _ := startServer(t, f)
+	gone := []string{"sub/" + lockName("crashed.iso"), "sub/" + part("A"), "sub/deeper/" + part("B")}
+	waitFor(t, "leftovers removed", func() bool {
+		for _, name := range gone {
+			if exists(filepath.Join(f.dir, filepath.FromSlash(name))) {
+				return false
+			}
+		}
+		return true
+	})
+	for _, name := range []string{"sub/" + lockName("running.iso"), "sub/" + part("C"), "sub/" + part("D"), "sub/" + lockName("other.txt"), ".git/" + part("E"), "sub/crashed.iso"} {
+		if !exists(filepath.Join(f.dir, filepath.FromSlash(name))) {
+			t.Errorf("%s removed", name)
+		}
+	}
+	if resp, err := http.Get("http://" + addr + "/"); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+}

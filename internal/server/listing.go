@@ -107,6 +107,7 @@ type listItem struct {
 	New     bool // just created
 	size    int64
 	mod     time.Time
+	real    string // URL path where it really lives (see resolve)
 }
 
 // SortHref links a column header: a second click reverses the order.
@@ -129,8 +130,10 @@ func (l listing) SortState(col string) string {
 	}
 }
 
-func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir bool) error {
+func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, wantDir bool) error {
 	if !wantDir && urlPath != "/" {
+		// Not cached: whether the folder may be seen depends on the visitor.
+		c.Set(fiber.HeaderCacheControl, "no-store")
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(urlPath + "/"))
 	}
 
@@ -155,12 +158,12 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 		if locked[e.Name()] {
 			continue
 		}
-		item, ok := s.listItem(urlPath, e)
+		item, ok := s.listItem(urlPath, realPath, e)
 		if !ok {
 			continue
 		}
 		// Only what the visitor may open is listed.
-		if ok, err := s.allowed(c, object(path.Join(urlPath, item.Name), item.IsDir), auth.ActRead); err != nil {
+		if ok, err := s.mayRead(c, path.Join(urlPath, item.Name), item.real, item.IsDir); err != nil {
 			return err
 		} else if !ok {
 			continue
@@ -203,7 +206,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 			}
 		}
 	}
-	create, replace, err := s.uploadRights(c, object(urlPath, true))
+	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
 	if err != nil {
 		return err
 	}
@@ -279,9 +282,10 @@ func crumbs(urlPath string) []crumb {
 	return out
 }
 
-// listItem hides dotfiles, non-regular files and symlinks that do not
-// resolve inside the root.
-func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
+// listItem describes the entry e of the directory at dirPath, which really
+// lives at realDir. It hides dotfiles, non-regular files and symlinks that
+// do not resolve inside the root, or lead to entries that may not be shown.
+func (s *Server) listItem(dirPath, realDir string, e fs.DirEntry) (listItem, bool) {
 	name := e.Name()
 	if hidden(name) {
 		return listItem{}, false
@@ -289,10 +293,12 @@ func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
 	var (
 		info fs.FileInfo
 		err  error
+		real = path.Join(realDir, name)
 	)
 	if e.Type()&fs.ModeSymlink != 0 {
 		target := rootName(path.Join(dirPath, name))
-		if !s.visible(target, nil) {
+		var ok bool
+		if real, ok = s.resolve(target, nil); !ok {
 			return listItem{}, false
 		}
 		info, err = s.root.Stat(target)
@@ -311,6 +317,7 @@ func (s *Server) listItem(dirPath string, e fs.DirEntry) (listItem, bool) {
 		ModTime: mod.Format("Jan 2, 2006 15:04") + " UTC",
 		ModISO:  mod.Format(time.RFC3339),
 		mod:     mod,
+		real:    real,
 	}
 	switch {
 	case info.IsDir():

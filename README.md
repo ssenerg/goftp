@@ -15,7 +15,7 @@ Postgres whose access is decided by [Casbin](https://casbin.org) policies.
 ## Quick start with Docker Compose
 
 ```sh
-cp .env.example .env        # set POSTGRES_PASSWORD, e.g. $(openssl rand -hex 24)
+cp .env.example .env && chmod 600 .env   # set POSTGRES_PASSWORD, e.g. $(openssl rand -hex 24)
 docker compose up -d --build
 docker compose exec goftp goftp user add alice --role superadmin
 ```
@@ -30,9 +30,10 @@ GOFTP_RUN_AS=1000:1000           # its owner (see `id`), so uploads can write
 ```
 
 The port is only published on 127.0.0.1: put a TLS-terminating reverse
-proxy in front and set `GOFTP_PROXY_HEADER` and `GOFTP_TRUSTED_PROXIES` in
-`.env` (see [`.env.example`](.env.example)), or mount a certificate and set
-`GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`, then set `GOFTP_BIND=0.0.0.0`.
+proxy in front and set `GOFTP_PROXY_HEADER=X-Forwarded-For` and
+`GOFTP_TRUSTED_PROXIES` in `.env` (see [`.env.example`](.env.example)), or
+let goftp serve HTTPS itself with `GOFTP_TLS_DIR`, `GOFTP_TLS_CERT` and
+`GOFTP_TLS_KEY`, then set `GOFTP_BIND=0.0.0.0`.
 
 ## Users and roles
 
@@ -69,8 +70,9 @@ goftp policy remove anonymous '/public/*' read
 
 `"/docs/*"` covers `/docs/` and everything below it; `"/docs/"` alone is
 just that listing. Listings only show what the visitor may open. Signed-in
-users may always do what anonymous visitors may. Rules apply to URL paths:
-a symlink follows the rules of its own path, not those of its target.
+users may always do what anonymous visitors may. A symlink never grants
+more than the rules of where it leads: visitors need the rights for both
+the path they use and the path the link points to.
 
 ## Running without Docker
 
@@ -123,33 +125,42 @@ lock file `.<name>.lock` keeps other uploads of it out, and the data goes to
 a hidden `.goftp-*.part` file that is renamed into place only once complete;
 until then the previous version, if any, stays available. Other tools can
 hide files they write in place the same way: create `.<name>.lock` before
-writing `<name>` and delete it afterwards (such locks are always honored).
+writing `<name>` and delete it afterwards (such locks are always honored;
+a locked folder is hidden with everything in it).
 A running upload refreshes its lock every 15 seconds; a lock left behind by
 a goftp that stopped (crash, restart) is taken over by the next upload of
-that name once it is a minute old.
+that name once it is a minute old, and removed with its temp file when
+goftp starts again.
 
 ## Security notes
 
 - Serve over HTTPS: passwords and session tokens travel with every sign-in
-  and request. Over HTTPS the session cookie is `Secure` and `__Host-`
-  prefixed.
+  and request. Over HTTPS (served by goftp, or by a trusted proxy that
+  sends `X-Forwarded-Proto`) the session cookie is `Secure` and `__Host-`
+  prefixed, and HSTS is sent.
 - Passwords are hashed with Argon2id; only SHA-256 hashes of session tokens
   are stored.
 - Failed sign-ins (and wrong current passwords) are rate limited per client
   (`limiter.*`), and each user can sign in at most 30 times a minute.
-  Behind a reverse proxy, set `server.proxy_header` and
-  `server.trusted_proxies`, otherwise every client shares the proxy's
-  budget and the server cannot tell that requests arrived over HTTPS.
+  Behind a reverse proxy, set `server.proxy_header` (`X-Forwarded-For`)
+  and `server.trusted_proxies`, otherwise every client shares the proxy's
+  budget and the server cannot tell that requests arrived over HTTPS;
+  goftp logs a warning when it sees proxy headers it does not trust.
 - Cross-site form posts and uploads are refused (`Sec-Fetch-Site`/`Origin`
   checks, `SameSite=Lax` cookies).
+- Concurrent connections are capped to fit the open file limit. When
+  clients connect directly rather than through a proxy, also cap what one
+  client may hold with `server.max_conns_per_ip` (`GOFTP_MAX_CONNS_PER_IP`).
 - Symlinks are followed only when they use relative targets that stay inside
-  the served directory and do not lead into a dotfile or dot-directory.
+  the served directory, do not lead into a dotfile or dot-directory, and
+  lead where the visitor may go anyway.
 
 ## Troubleshooting
 
 "Wrong username or password" at sign-in: `docker compose logs goftp | grep
-"login failed"` shows the name that was tried and whether no such user
-exists or the password was wrong. `goftp user list` shows the users, and
+"login failed"` shows whether the name matched no user or the password was
+wrong (names that match no user are not logged: they are sometimes
+passwords typed into the wrong field). `goftp user list` shows the users, and
 `goftp user passwd NAME` gives one a new temporary password (temporary
 passwords ignore case and surrounding spaces).
 

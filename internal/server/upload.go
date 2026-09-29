@@ -17,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v3"
@@ -34,6 +35,18 @@ func (s *Server) uploadRights(c fiber.Ctx, obj string) (create, replace bool, er
 	}
 	replace, err = s.allowed(c, obj, auth.ActOverwrite)
 	return create, replace, err
+}
+
+// uploadRightsAt narrows the upload rights at obj to those the visitor also
+// has at realObj, where symlinks lead (see resolve): a symlink grants
+// nothing its target's rules do not.
+func (s *Server) uploadRightsAt(c fiber.Ctx, obj, realObj string) (create, replace bool, err error) {
+	create, replace, err = s.uploadRights(c, obj)
+	if err != nil || obj == realObj || (!create && !replace) {
+		return create, replace, err
+	}
+	realCreate, realReplace, err := s.uploadRights(c, realObj)
+	return create && realCreate, replace && realReplace, err
 }
 
 // put stores the request body as the file at the request path, e.g.
@@ -68,7 +81,7 @@ func (s *Server) put(c fiber.Ctx) error {
 	if limit := int64(s.cfg.Upload.MaxSize); limit > 0 && length > limit {
 		return fiber.ErrRequestEntityTooLarge
 	}
-	dir, err := s.uploadDir(dirPath)
+	dir, realDir, err := s.uploadDir(dirPath)
 	if errors.Is(err, fiber.ErrNotFound) {
 		return fiber.ErrConflict
 	}
@@ -76,6 +89,11 @@ func (s *Server) put(c fiber.Ctx) error {
 		return err
 	}
 	defer dir.Close()
+	if create, replace, err = s.uploadRightsAt(c, urlPath, path.Join(realDir, name)); err != nil {
+		return err
+	} else if !create && !replace {
+		return s.deny(c)
+	}
 
 	body := s.requestBody(c)
 	rights := uploadRights{create: create, replace: replace}
@@ -126,8 +144,9 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	form := multipart.NewReader(body, params["boundary"])
 	replace := false
 	var (
-		dir    *os.Root
-		stored []string
+		dir     *os.Root
+		realDir string
+		stored  []string
 	)
 	defer func() {
 		if dir != nil {
@@ -151,16 +170,21 @@ func (s *Server) postForm(c fiber.Ctx) error {
 			replace = slices.Contains([]string{"1", "on", "true"}, string(v))
 		case part.FormName() == "file" && name != "":
 			if dir == nil {
-				if dir, err = s.uploadDir(urlPath); err != nil {
+				if dir, realDir, err = s.uploadDir(urlPath); err != nil {
 					return err
 				}
 			}
 			if !validName(name) {
 				return s.formError(c, stored, fiber.ErrBadRequest)
 			}
-			create, mayReplace, err := s.uploadRights(c, path.Join(urlPath, name))
+			create, mayReplace, err := s.uploadRightsAt(c, path.Join(urlPath, name), path.Join(realDir, name))
 			if err != nil {
 				return s.formError(c, stored, err)
+			}
+			// Checked before the name is looked up: without rights on the
+			// file, whether it exists is none of the visitor's business.
+			if !create && !mayReplace {
+				return s.formError(c, stored, s.deny(c))
 			}
 			created, size, err := s.receive(dir, name, part, replace, uploadRights{create: create, replace: mayReplace})
 			if errors.Is(err, errExists) {
@@ -194,31 +218,32 @@ func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
 	return s.sendError(c, err, "Stored before the error: "+strings.Join(stored, ", "))
 }
 
-// uploadDir opens the existing directory at urlPath for writing. Its fd pins
-// the directory, so later operations cannot be redirected by symlink swaps.
-func (s *Server) uploadDir(urlPath string) (*os.Root, error) {
+// uploadDir opens the existing directory at urlPath for writing, and
+// returns the URL path where it really lives (see resolve). Its fd pins the
+// directory, so later operations cannot be redirected by symlink swaps.
+func (s *Server) uploadDir(urlPath string) (*os.Root, string, error) {
 	name := rootName(path.Clean(urlPath))
 	// OpenRoot reports non-directories with an unexported error.
 	if info, err := s.root.Stat(name); err != nil {
-		return nil, s.openError(err)
+		return nil, "", s.openError(err)
 	} else if !info.IsDir() {
-		return nil, fiber.ErrNotFound
+		return nil, "", fiber.ErrNotFound
 	}
 	dir, err := s.root.OpenRoot(name)
 	if err != nil {
-		return nil, s.openError(err)
+		return nil, "", s.openError(err)
 	}
 	f, err := dir.Open(".")
 	if err == nil {
-		visible := s.visible(name, f)
+		real, visible := s.resolve(name, f)
 		_ = f.Close()
 		if visible {
-			return dir, nil
+			return dir, real, nil
 		}
 		err = fiber.ErrNotFound
 	}
 	_ = dir.Close()
-	return nil, err
+	return nil, "", err
 }
 
 var errExists = errors.New("file exists")
@@ -267,6 +292,13 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
+	}
+	if err == nil && !rights.create {
+		// Replacing is all the visitor may do, so the file has to still
+		// be there.
+		if _, lerr := dir.Lstat(name); lerr != nil {
+			err = fiber.ErrForbidden
+		}
 	}
 	if err == nil {
 		err = commit(dir, tmp, name, replace && rights.replace)
@@ -327,11 +359,18 @@ func validName(name string) bool {
 		bad += `:*?"<>|`
 	}
 	for _, r := range name {
-		if r < 0x20 || r == 0x7f || strings.ContainsRune(bad, r) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp) || bidiControl(r) || strings.ContainsRune(bad, r) {
 			return false
 		}
 	}
 	return true
+}
+
+// bidiControl reports whether r reorders the text around it, which lets a
+// name pass for another: "invoice\u202efdp.exe" shows as "invoiceexe.pdf".
+// Joiners and direction marks, which cannot, are fine.
+func bidiControl(r rune) bool {
+	return (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069')
 }
 
 func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool) {
@@ -374,13 +413,14 @@ func (s *Server) uploadError(body *requestBody, err error) error {
 // to the whole request, so the read deadline is re-armed before every
 // read: an upload only times out when the client stops sending.
 type requestBody struct {
-	r       io.Reader
-	conn    net.Conn
-	timeout time.Duration
-	length  int64 // declared Content-Length, or -1
-	read    int64
-	eof     bool
-	err     error
+	r        io.Reader
+	conn     net.Conn
+	timeout  time.Duration
+	deadline time.Time // if set, for the whole body instead
+	length   int64     // declared Content-Length, or -1
+	read     int64
+	eof      bool
+	err      error
 }
 
 func (s *Server) requestBody(c fiber.Ctx) *requestBody {
@@ -398,7 +438,11 @@ func (s *Server) requestBody(c fiber.Ctx) *requestBody {
 
 func (b *requestBody) Read(p []byte) (int, error) {
 	if b.conn != nil {
-		_ = b.conn.SetReadDeadline(time.Now().Add(b.timeout))
+		deadline := b.deadline
+		if deadline.IsZero() {
+			deadline = time.Now().Add(b.timeout)
+		}
+		_ = b.conn.SetReadDeadline(deadline)
 	}
 	n, err := b.r.Read(p)
 	b.read += int64(n)

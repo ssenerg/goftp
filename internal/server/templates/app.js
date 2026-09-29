@@ -100,7 +100,7 @@
       }
       error.textContent = {
         0: "The connection was lost. Try again.",
-        400: "Folder names cannot be empty or very long, start with a dot, or contain / or \\.",
+        400: "Folder names cannot be empty or very long, start with a dot, or contain /, \\ or control characters.",
         401: "You were signed out. Sign in and try again.",
         403: "You may not create folders here.",
         409: "Something with this name already exists here.",

@@ -1,5 +1,5 @@
 # Usage:
-#   cp .env.example .env               # then set POSTGRES_PASSWORD
+#   cp .env.example .env && chmod 600 .env   # then set POSTGRES_PASSWORD
 #   docker compose up -d --build
 #   docker compose exec goftp goftp user add alice --role superadmin
 services:
@@ -12,6 +12,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     volumes:
       - pgdata:/var/lib/postgresql
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "goftp", "-d", "goftp"]
       interval: 5s
@@ -29,13 +31,19 @@ services:
       GOFTP_DATABASE_URL: postgres://goftp@postgres:5432/goftp?sslmode=disable
       PGPASSWORD: ${POSTGRES_PASSWORD}
       GOFTP_UPLOAD_MAX_SIZE: ${GOFTP_UPLOAD_MAX_SIZE:-0}
+      GOFTP_SERVER_MAX_CONNS_PER_IP: ${GOFTP_MAX_CONNS_PER_IP:-0}
       GOFTP_SERVER_PROXY_HEADER: ${GOFTP_PROXY_HEADER:-}
       GOFTP_SERVER_TRUSTED_PROXIES: ${GOFTP_TRUSTED_PROXIES:-}
+      GOFTP_TLS_CERT_FILE: ${GOFTP_TLS_CERT:+/tls/${GOFTP_TLS_CERT}}
+      GOFTP_TLS_KEY_FILE: ${GOFTP_TLS_KEY:+/tls/${GOFTP_TLS_KEY}}
     ports:
       - "${GOFTP_BIND:-127.0.0.1}:${GOFTP_PORT:-8080}:8080"
     user: "${GOFTP_RUN_AS:-65532:65532}"
     volumes:
       - ${GOFTP_DATA:-files}:/data
+      - ${GOFTP_TLS_DIR:-tls}:/tls:ro
+    # Longer than server.shutdown_timeout, so uploads can finish.
+    stop_grace_period: 15s
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -44,3 +52,4 @@ services:
 volumes:
   pgdata:
   files:
+  tls:

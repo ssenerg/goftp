@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -75,6 +76,20 @@ func (s *Server) locked(dir, name string) bool {
 	return err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR)
 }
 
+// lockedPath reports whether a lock file from another tool hides an entry
+// on the way to rel, a slash-separated path relative to the root that
+// contains no symlinks.
+func (s *Server) lockedPath(rel string) bool {
+	dir := "."
+	for name := range strings.SplitSeq(rel, "/") {
+		if s.locked(dir, name) {
+			return true
+		}
+		dir = path.Join(dir, name)
+	}
+	return false
+}
+
 // acquireLock creates the lock file for uploading name into dir, recording
 // the temp file the upload writes to, and keeps it fresh until release is
 // called. An abandoned goftp lock is taken over; any other existing lock
@@ -140,4 +155,74 @@ func (s *Server) holdLock(dir *os.Root, lock, tmp string) func() {
 			_ = dir.Remove(lock)
 		}
 	}
+}
+
+// removeLeftovers deletes what uploads cut off by a crash or a forced
+// shutdown left behind: their locks and temp files, which are otherwise
+// only removed when the same name is uploaded again. As for a takeover, a
+// lock counts as abandoned once it has not been refreshed for lockExpiry;
+// temp files named in live locks belong to running uploads, of this server
+// or another one sharing the directory. Other tools' locks and
+// dot-directories are left alone. It returns how many files it removed.
+func (s *Server) removeLeftovers(ctx context.Context) int {
+	removed := 0
+	stale := func(e fs.DirEntry) bool {
+		info, err := e.Info()
+		return err == nil && time.Since(info.ModTime()) >= lockExpiry
+	}
+	var walk func(dir string)
+	walk = func(dir string) {
+		if ctx.Err() != nil {
+			return
+		}
+		d, err := s.root.Open(dir)
+		if err != nil {
+			return
+		}
+		entries, err := d.ReadDir(-1)
+		_ = d.Close()
+		if err != nil {
+			return
+		}
+		inUse := make(map[string]bool)
+		for _, e := range entries {
+			if _, ok := lockTarget(e.Name()); !ok || !e.Type().IsRegular() {
+				continue
+			}
+			lock := path.Join(dir, e.Name())
+			if tmp, err := readLock(s.root, lock); err != nil {
+				continue // another tool's
+			} else if stale(e) && s.removeStaleLock(lock, tmp) {
+				removed++
+			} else {
+				inUse[tmp] = true
+			}
+		}
+		for _, e := range entries {
+			switch name := e.Name(); {
+			case e.IsDir() && !hidden(name):
+				walk(path.Join(dir, name))
+			case validTemp(name) && e.Type().IsRegular() && !inUse[name] && stale(e):
+				if s.root.Remove(path.Join(dir, name)) == nil {
+					removed++
+				}
+			}
+		}
+	}
+	walk(".")
+	return removed
+}
+
+// removeStaleLock removes the goftp lock at name (relative to the root) if
+// it still names tmp and has not been refreshed for lockExpiry.
+func (s *Server) removeStaleLock(name, tmp string) bool {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if owner, err := readLock(s.root, name); err != nil || owner != tmp {
+		return false
+	}
+	if info, err := s.root.Lstat(name); err != nil || time.Since(info.ModTime()) < lockExpiry {
+		return false
+	}
+	return s.root.Remove(name) == nil
 }

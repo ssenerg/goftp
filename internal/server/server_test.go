@@ -257,6 +257,10 @@ func TestDirectoryRedirect(t *testing.T) {
 		if got := resp.Header.Get("Location"); got != loc {
 			t.Errorf("%s: Location %q, want %q", raw, got, loc)
 		}
+		// Whether the folder may be seen depends on the visitor.
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control %q", raw, got)
+		}
 	}
 }
 
@@ -275,6 +279,9 @@ func TestDownload(t *testing.T) {
 		"Content-Disposition": "attachment; filename=report.txt",
 		"Accept-Ranges":       "bytes",
 		"Cache-Control":       "no-store",
+		// Should a browser render a download anyway, it gets no origin.
+		"Content-Security-Policy": fileSecurityPolicy,
+		"X-Content-Type-Options":  "nosniff",
 	}
 	for k, v := range checks {
 		if got := resp.Header.Get(k); got != v {
@@ -501,6 +508,12 @@ func TestAccessLog(t *testing.T) {
 	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
 		t.Errorf("access log:\n got %q\nwant %q (+ listing)", got, want)
 	}
+	// Anyone can send unknown methods: that is no server error.
+	for _, e := range f.logs.entries("request") {
+		if e["method"] == "PROPFIND" && e["level"] != "info" {
+			t.Errorf("unknown method logged at level %v", e["level"])
+		}
+	}
 	if strings.Contains(f.logs.raw(), f.token) || strings.Contains(f.logs.raw(), "q=1") {
 		t.Error("session token or query string leaked into logs")
 	}
@@ -551,6 +564,9 @@ func TestErrorResponsesAreGeneric(t *testing.T) {
 	if body != "Not Found" || resp.Header.Get("Content-Type") != fiber.MIMETextPlainCharsetUTF8 {
 		t.Errorf("404 response %q %q", body, resp.Header.Get("Content-Type"))
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("404 Cache-Control %q", got)
+	}
 }
 
 func TestLongNonASCIIPath(t *testing.T) {
@@ -570,5 +586,11 @@ func TestLongNonASCIIPath(t *testing.T) {
 	resp, body := f.do(t, "GET", raw, "Cookie", "session="+strings.Repeat("c", 1024))
 	if resp.StatusCode != 200 || body != "deep" {
 		t.Fatalf("status %d, body %q", resp.StatusCode, body)
+	}
+}
+
+func TestRefusesFileSystemRoot(t *testing.T) {
+	if _, err := New(&config.Config{Dir: "/"}, zap.NewNop(), nil); err == nil || !strings.Contains(err.Error(), "whole file system") {
+		t.Errorf("serving / was not refused: %v", err)
 	}
 }

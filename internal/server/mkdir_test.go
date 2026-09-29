@@ -88,6 +88,10 @@ func TestMkdir(t *testing.T) {
 	if isDir(filepath.Join(f.dir, "sub", "x")) {
 		t.Error("a refused request created a folder")
 	}
+	// Visitors who may not create anything here are refused before the
+	// body is read.
+	resp, _ = f.as("").send(t, "POST", "/sub/", strings.NewReader("{"), "Content-Type", "application/json")
+	expectStatus(t, resp, http.StatusUnauthorized)
 	if l := leftovers(f.dir); len(l) > 0 {
 		t.Errorf("leftover files: %v", l)
 	}

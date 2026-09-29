@@ -21,13 +21,18 @@ server:
   write_timeout: 1m      # max time without write progress during a response
   idle_timeout: 2m       # keep-alive idle time
   shutdown_timeout: 10s  # grace period for in-flight requests on shutdown
-  # Behind a reverse proxy, name a header the proxy overwrites (not appends)
-  # and list the proxy addresses, e.g. nginx: proxy_set_header X-Real-IP $remote_addr;
-  # The proxy should also set X-Forwarded-Proto, so HTTPS is recognized.
+  # Behind a reverse proxy: the header with the client address, and the
+  # proxy addresses. X-Forwarded-For suits common proxies, which append to
+  # it (nginx: proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;),
+  # so clients cannot forge it. The proxy should also set X-Forwarded-Proto,
+  # so HTTPS is recognized; HSTS is sent then.
   proxy_header: ""
   trusted_proxies: []    # e.g. ["127.0.0.1", "10.0.0.0/8"]
+  # Connections one client may hold at once (IPv6 clients: per /64), e.g.
+  # 100 when clients connect directly; behind a proxy, limit them there.
+  max_conns_per_ip: 0    # 0 = no limit
 
-tls:                     # serve HTTPS directly (enables HSTS)
+tls:                     # serve HTTPS directly
   cert_file: ""
   key_file: ""
 
