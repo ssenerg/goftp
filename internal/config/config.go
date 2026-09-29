@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
+	"net/netip"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -205,10 +205,16 @@ func (c *Config) normalize() error {
 		if p = strings.TrimSpace(p); p == "" {
 			continue
 		}
-		if net.ParseIP(p) == nil {
-			if _, _, err := net.ParseCIDR(p); err != nil {
-				errs = append(errs, fmt.Errorf("server.trusted_proxies: invalid IP or CIDR %q", p))
+		// Fiber matches single addresses by their canonical text.
+		if prefix, err := netip.ParsePrefix(p); err == nil {
+			if prefix.Bits() == 0 {
+				errs = append(errs, fmt.Errorf("server.trusted_proxies: %q would let every client choose its address", p))
 			}
+			p = prefix.Masked().String()
+		} else if addr, err := netip.ParseAddr(p); err == nil {
+			p = addr.WithZone("").Unmap().String()
+		} else {
+			errs = append(errs, fmt.Errorf("server.trusted_proxies: invalid IP or CIDR %q", p))
 		}
 		proxies = append(proxies, p)
 	}

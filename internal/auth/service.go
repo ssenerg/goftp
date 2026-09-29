@@ -19,7 +19,7 @@ import (
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
 	// The reasons are for logs; clients only learn ErrInvalidCredentials.
-	errNoSuchUser       = fmt.Errorf("%w: no such user", ErrInvalidCredentials)
+	ErrNoSuchUser       = fmt.Errorf("%w: no such user", ErrInvalidCredentials)
 	errWrongPassword    = fmt.Errorf("%w: wrong password", ErrInvalidCredentials)
 	errChangedMeanwhile = fmt.Errorf("%w: the password changed meanwhile", ErrInvalidCredentials)
 	ErrSamePassword     = fmt.Errorf("%w: the new password must differ from the current one", ErrWeakPassword)
@@ -112,7 +112,7 @@ type Session struct {
 func (s *Service) Login(ctx context.Context, username, password string) (*Session, error) {
 	username = NormalizeUsername(username)
 	if checkUsername(username) != nil {
-		return nil, errNoSuchUser
+		return nil, ErrNoSuchUser
 	}
 	if password == "" || len(password) > MaxPasswordLength {
 		return nil, errWrongPassword
@@ -126,7 +126,7 @@ func (s *Service) Login(ctx context.Context, username, password string) (*Sessio
 	case err != nil:
 		return nil, err
 	case u == nil:
-		return nil, errNoSuchUser
+		return nil, ErrNoSuchUser
 	case !ok:
 		return nil, errWrongPassword
 	}

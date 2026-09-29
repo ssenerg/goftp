@@ -588,3 +588,9 @@ func TestLongNonASCIIPath(t *testing.T) {
 		t.Fatalf("status %d, body %q", resp.StatusCode, body)
 	}
 }
+
+func TestRefusesFileSystemRoot(t *testing.T) {
+	if _, err := New(&config.Config{Dir: "/"}, zap.NewNop(), nil); err == nil || !strings.Contains(err.Error(), "whole file system") {
+		t.Errorf("serving / was not refused: %v", err)
+	}
+}

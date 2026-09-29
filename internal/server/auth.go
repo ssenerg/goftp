@@ -350,7 +350,13 @@ func (s *Server) login(c fiber.Ctx) error {
 	sess, err := s.auth.Login(ctx, form["username"], form["password"])
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
-		s.log.Warn("login failed", zap.String("ip", c.IP()), zap.String("user", loggableName(form["username"])), zap.Error(err))
+		// A name that matches no user is not logged: it may be a password
+		// typed into the wrong field.
+		user := "(unknown)"
+		if !errors.Is(err, auth.ErrNoSuchUser) {
+			user = auth.NormalizeUsername(form["username"])
+		}
+		s.log.Warn("login failed", zap.String("ip", c.IP()), zap.String("user", user), zap.Error(err))
 		return fail(fiber.StatusUnauthorized, "Wrong username or password.")
 	case errors.Is(err, auth.ErrBusy):
 		check.refund()
@@ -376,15 +382,6 @@ func (s *Server) login(c fiber.Ctx) error {
 		next = passwordPath + "?next=" + url.QueryEscape(next)
 	}
 	return s.redirect(c, next)
-}
-
-// loggableName returns a login name for the logs, unless it does not look
-// like a username (such as a password typed into the wrong field).
-func loggableName(name string) string {
-	if name = auth.NormalizeUsername(name); auth.ValidUsername(name) {
-		return name
-	}
-	return "(invalid)"
 }
 
 func (s *Server) logout(c fiber.Ctx) error {

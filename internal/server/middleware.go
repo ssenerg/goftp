@@ -211,3 +211,19 @@ func clientKey(ip string) string {
 	}
 	return prefix.String()
 }
+
+// noteProxyHeaders warns once about forwarding headers from an untrusted
+// address: behind a proxy that goftp does not know of, all clients share
+// the proxy's address, and so one budget of failed sign-ins.
+func (s *Server) noteProxyHeaders(c fiber.Ctx) error {
+	if !s.proxyNoted.Load() && !c.IsProxyTrusted() {
+		for _, h := range []string{fiber.HeaderXForwardedFor, "X-Real-Ip", "Forwarded"} {
+			if c.Get(h) != "" && s.proxyNoted.CompareAndSwap(false, true) {
+				s.log.Warn("ignoring proxy headers from an untrusted address; behind a reverse proxy, set server.proxy_header and server.trusted_proxies",
+					zap.String("header", h), zap.String("from", c.IP()))
+				break
+			}
+		}
+	}
+	return c.Next()
+}
