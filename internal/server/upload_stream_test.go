@@ -285,3 +285,33 @@ func TestLockHeartbeatAndOwnership(t *testing.T) {
 		t.Errorf("upload removed a lock it does not own: %q", got)
 	}
 }
+
+// Forms are small: trickling one, chunk by chunk, cannot hold a connection
+// beyond read_timeout the way a slow upload may.
+func TestSlowFormTimesOut(t *testing.T) {
+	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
+	addr, _ := startServer(t, f)
+	for _, target := range []string{"/.auth/login", "/"} {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: t\r\nContent-Type: application/x-www-form-urlencoded\r\nTransfer-Encoding: chunked\r\n\r\n", target)
+		start := time.Now()
+		for time.Since(start) < 3*time.Second {
+			if _, err := io.WriteString(conn, "1\r\nx\r\n"); err != nil {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if held := time.Since(start); held > 1500*time.Millisecond {
+			t.Errorf("POST %s: a trickled form held the connection for %v", target, held.Round(time.Millisecond))
+		}
+		if resp, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
+			t.Errorf("POST %s: %v", target, err)
+		} else if resp.StatusCode != http.StatusRequestTimeout {
+			t.Errorf("POST %s: status %d, want 408", target, resp.StatusCode)
+		}
+		_ = conn.Close()
+	}
+}

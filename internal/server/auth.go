@@ -232,6 +232,9 @@ func (s *Server) readForm(c fiber.Ctx) (map[string]string, bool, error) {
 		return nil, false, fiber.ErrUnsupportedMediaType
 	}
 	body := s.requestBody(c)
+	// Unlike an upload, a form has to arrive within one read timeout, so a
+	// client trickling it cannot hold the connection.
+	body.deadline = time.Now().Add(body.timeout)
 	data, err := io.ReadAll(io.LimitReader(body, maxFormSize+1))
 	if err != nil {
 		return nil, isJSON, s.uploadError(body, err)

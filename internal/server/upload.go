@@ -374,13 +374,14 @@ func (s *Server) uploadError(body *requestBody, err error) error {
 // to the whole request, so the read deadline is re-armed before every
 // read: an upload only times out when the client stops sending.
 type requestBody struct {
-	r       io.Reader
-	conn    net.Conn
-	timeout time.Duration
-	length  int64 // declared Content-Length, or -1
-	read    int64
-	eof     bool
-	err     error
+	r        io.Reader
+	conn     net.Conn
+	timeout  time.Duration
+	deadline time.Time // if set, for the whole body instead
+	length   int64     // declared Content-Length, or -1
+	read     int64
+	eof      bool
+	err      error
 }
 
 func (s *Server) requestBody(c fiber.Ctx) *requestBody {
@@ -398,7 +399,11 @@ func (s *Server) requestBody(c fiber.Ctx) *requestBody {
 
 func (b *requestBody) Read(p []byte) (int, error) {
 	if b.conn != nil {
-		_ = b.conn.SetReadDeadline(time.Now().Add(b.timeout))
+		deadline := b.deadline
+		if deadline.IsZero() {
+			deadline = time.Now().Add(b.timeout)
+		}
+		_ = b.conn.SetReadDeadline(deadline)
 	}
 	n, err := b.r.Read(p)
 	b.read += int64(n)
