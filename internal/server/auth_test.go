@@ -178,6 +178,12 @@ func TestLoginForm(t *testing.T) {
 		}
 	}
 
+	r, k, v = formBody("username", "nobody", "password", "x")
+	f.send(t, "POST", loginPath, r, k, v)
+	if e := f.logs.entries("login failed"); len(e) != 2 || e[1]["user"] != "nobody" || !strings.HasSuffix(e[1]["error"].(string), ": no such user") {
+		t.Errorf("failed logins logged: %v", e)
+	}
+
 	resp, _ = f.send(t, "POST", loginPath, strings.NewReader("username=a"), "Content-Type", "text/plain")
 	expectStatus(t, resp, http.StatusUnsupportedMediaType)
 	r, k, v = formBody("username", name, "password", strings.Repeat("x", maxFormSize))
@@ -456,8 +462,9 @@ func TestLoginLimiter(t *testing.T) {
 	if ra, err := strconv.Atoi(resp.Header.Get("Retry-After")); err != nil || ra < 59 || ra > 60 {
 		t.Errorf("Retry-After %q", resp.Header.Get("Retry-After"))
 	}
-	if n := len(f.logs.entries("login failed")); n != 3 {
-		t.Errorf("%d failed logins logged", n)
+	failed := f.logs.entries("login failed")
+	if len(failed) != 3 || failed[0]["user"] != name || !strings.HasSuffix(failed[0]["error"].(string), ": wrong password") {
+		t.Errorf("failed logins logged: %v", failed)
 	}
 
 	// Wrong current passwords count as well.

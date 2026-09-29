@@ -18,8 +18,12 @@ import (
 
 var (
 	ErrInvalidCredentials = errors.New("invalid username or password")
-	ErrSamePassword       = fmt.Errorf("%w: the new password must differ from the current one", ErrWeakPassword)
-	ErrBusy               = errors.New("too many password checks in progress")
+	// The reasons are for logs; clients only learn ErrInvalidCredentials.
+	errNoSuchUser       = fmt.Errorf("%w: no such user", ErrInvalidCredentials)
+	errWrongPassword    = fmt.Errorf("%w: wrong password", ErrInvalidCredentials)
+	errChangedMeanwhile = fmt.Errorf("%w: the password changed meanwhile", ErrInvalidCredentials)
+	ErrSamePassword     = fmt.Errorf("%w: the new password must differ from the current one", ErrWeakPassword)
+	ErrBusy             = errors.New("too many password checks in progress")
 )
 
 // hashWait bounds how long a password check waits for a free hashing slot.
@@ -77,6 +81,9 @@ func (s *Service) verify(ctx context.Context, u *User, password string) (bool, e
 		verifyPassword(s.dummy, password)
 		return false, nil
 	}
+	if u.MustChangePassword {
+		password = forgiveTemporary(password)
+	}
 	return verifyPassword(u.PasswordHash, password), nil
 }
 
@@ -104,24 +111,29 @@ type Session struct {
 // Login checks the credentials and starts a session.
 func (s *Service) Login(ctx context.Context, username, password string) (*Session, error) {
 	username = NormalizeUsername(username)
-	if password == "" || len(password) > MaxPasswordLength || checkUsername(username) != nil {
-		return nil, ErrInvalidCredentials
+	if checkUsername(username) != nil {
+		return nil, errNoSuchUser
+	}
+	if password == "" || len(password) > MaxPasswordLength {
+		return nil, errWrongPassword
 	}
 	u, err := s.store.UserByName(ctx, username)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
 	}
 	ok, err := s.verify(ctx, u, password)
-	if err != nil {
+	switch {
+	case err != nil:
 		return nil, err
-	}
-	if !ok {
-		return nil, ErrInvalidCredentials
+	case u == nil:
+		return nil, errNoSuchUser
+	case !ok:
+		return nil, errWrongPassword
 	}
 	sess, err := s.newSession(ctx, u)
 	if errors.Is(err, ErrNotFound) {
-		// The password changed (or the user was deleted) meanwhile.
-		return nil, ErrInvalidCredentials
+		// Changed (or the user was deleted) since it was checked.
+		return nil, errChangedMeanwhile
 	}
 	return sess, err
 }
@@ -157,14 +169,14 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 // of u's sessions end and a new one starts.
 func (s *Service) ChangePassword(ctx context.Context, u *User, current, next string) (*Session, error) {
 	if len(current) > MaxPasswordLength {
-		return nil, ErrInvalidCredentials
+		return nil, errWrongPassword
 	}
 	ok, err := s.verify(ctx, u, current)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, ErrInvalidCredentials
+		return nil, errWrongPassword
 	}
 	if err := CheckPassword(u.Username, next); err != nil {
 		return nil, err
