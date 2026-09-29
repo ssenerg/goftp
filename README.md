@@ -106,8 +106,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
 
 ## Uploads
 
-- Browser: listing pages show an upload form to users who may upload there.
-  Existing files are only replaced when "Replace existing" is checked.
+- Browser: users who may upload into a folder can drop files anywhere on its
+  page, or choose them, and watch each upload's progress. Existing files
+  are only replaced when "Replace files that already exist" is ticked.
 - curl: `curl -T file.iso -H "Authorization: Bearer $TOKEN" https://host/dir/`.
   PUT replaces existing files unless `-H "If-None-Match: *"` is given, and
   needs a Content-Length.

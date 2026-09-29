@@ -1,63 +1,91 @@
 {{define "listing"}}{{template "head" .}}
 <body>
-<div class="container">
-  <header>
+{{template "topbar" .}}
+<main class="container">
+  <nav class="crumbs" aria-label="Folder path">
+    <a href="/"{{if not .Crumbs}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span hidden>Home</span></a>
+    {{- range .Crumbs}}
+    <span class="sep" aria-hidden="true">/</span><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Name}}</a>
+    {{- end}}
+  </nav>
+
+  {{if .Uploaded}}
+  <div class="alert success banner" id="uploaded" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Uploaded {{.Uploaded}} file{{if ne .Uploaded 1}}s{{end}}.</div>
+  {{end}}
+
+  <div class="head">
     <div>
-      <h1><span class="logo">goftp</span></h1>
-      <div class="breadcrumb">{{.Path}}</div>
+      <h1>{{.Title}}{{if and .User (not .Upload)}} <span class="chip">View only</span>{{end}}</h1>
+      <p class="summary">{{.Summary}}</p>
     </div>
-    {{template "userbar" .}}
-  </header>
+    {{if .Items}}
+    <label class="search" id="search" hidden>
+      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+      <input id="filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" autocomplete="off">
+      <kbd aria-hidden="true">/</kbd>
+    </label>
+    {{end}}
+  </div>
 
   {{with .Upload}}
-  <form class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
-    {{if .Replace}}<label><input type="checkbox" name="replace" value="1"> Replace existing</label>{{end}}
-    <input type="file" name="file" multiple required>
-    <button type="submit" class="primary">Upload</button>
+  <form id="upload" class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
+    <div class="dropzone">
+      <input type="file" name="file" multiple required aria-label="Choose files to upload">
+      <span class="dz-icon" aria-hidden="true"><svg class="i"><use href="#i-upload"/></svg></span>
+      <div class="dz-text">
+        <p class="pointer"><strong>Drop files here</strong> or click to choose them</p>
+        <p class="touch"><strong>Tap to choose files</strong> to upload</p>
+        <p class="dz-hint">They are uploaded to this folder.</p>
+      </div>
+    </div>
+    {{if .Replace}}
+    <div class="upload-options">
+      <label class="check"><input type="checkbox" name="replace" value="1"> Replace files that already exist</label>
+      <noscript><button type="submit" class="btn primary small">Upload</button></noscript>
+    </div>
+    {{else}}
+    <noscript><div class="upload-options"><span></span><button type="submit" class="btn primary small">Upload</button></div></noscript>
+    {{end}}
   </form>
+  <section id="transfers" class="card transfers" aria-live="polite" hidden></section>
+  <div id="drop" class="drop-overlay" hidden><div><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>Drop to upload to <strong>{{$.Title}}</strong></div></div>
   {{end}}
 
-  {{with .Parent}}
-  <div class="parent-link">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-    <a href="{{.}}">Parent directory</a>
-  </div>
-  {{end}}
-
-  <div class="table-wrap">
-  {{if .Items}}
-    <table>
+  <div class="card">
+    {{if .Items}}
+    <table class="files">
       <thead><tr>
-        <th>Name</th>
-        <th style="width:100px; text-align:right">Size</th>
-        <th class="date-col" style="width:160px; text-align:right">Modified</th>
+        <th aria-sort="{{.SortState "name"}}"><a href="{{.SortHref "name"}}">Name</a></th>
+        <th class="num" aria-sort="{{.SortState "size"}}"><a href="{{.SortHref "size"}}">Size</a></th>
+        <th class="date" aria-sort="{{.SortState "modified"}}"><a href="{{.SortHref "modified"}}">Modified</a></th>
       </tr></thead>
       <tbody>
-      {{range .Items}}
-        <tr>
-          <td>
-            <div class="name-cell">
-              {{if .IsDir}}
-              <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-              {{else}}
-              <svg class="icon icon-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              {{end}}
-              <a href="{{.Href}}">{{.Name}}</a>
-            </div>
-          </td>
-          <td class="size">{{.Size}}</td>
-          <td class="date date-col">{{.ModTime}}</td>
+        {{with .Parent}}
+        <tr class="up"><td class="name" colspan="3"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
+        {{end}}
+        {{range .Items}}
+        <tr data-name="{{.Key}}">
+          <td class="name"><a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
+          <td class="num">{{.Size}}</td>
+          <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
         </tr>
-      {{end}}
+        {{end}}
       </tbody>
     </table>
-  {{else}}
-    <div class="empty">This directory is empty.</div>
-  {{end}}
+    <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p></div>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-folder"/></svg>
+      <p>This folder is empty.</p>
+      {{if .Upload}}<p>Drop files anywhere on this page to upload them.</p>{{end}}
+      {{with .Parent}}<p><a href="{{.}}">Back to the parent folder</a></p>{{end}}
+    </div>
+    {{end}}
   </div>
-
-  <footer>goftp &middot; resumable file server</footer>
-</div>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
 </body>
 </html>
 {{end}}

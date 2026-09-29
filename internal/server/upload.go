@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -172,7 +173,11 @@ func (s *Server) postForm(c fiber.Ctx) error {
 		return fiber.ErrBadRequest
 	}
 	s.finishBody(c, body)
-	return c.Redirect().Status(fiber.StatusSeeOther).To(escapePath(strings.TrimSuffix(urlPath, "/") + "/"))
+	// Scripts upload with Accept: */* and need no page.
+	if !strings.Contains(c.Get(fiber.HeaderAccept), fiber.MIMETextHTML) {
+		return c.SendStatus(fiber.StatusCreated)
+	}
+	return c.Redirect().Status(fiber.StatusSeeOther).To(escapePath(object(urlPath, true)) + "?uploaded=" + strconv.Itoa(len(stored)))
 }
 
 // formError reports a failed form upload, naming the files that were
@@ -181,11 +186,7 @@ func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
 	if len(stored) == 0 {
 		return err
 	}
-	if herr := s.handleError(c, err); herr != nil {
-		return herr
-	}
-	c.Response().AppendBodyString("\nStored before the error: " + strings.Join(stored, ", ") + "\n")
-	return nil
+	return s.sendError(c, err, "Stored before the error: "+strings.Join(stored, ", "))
 }
 
 // uploadDir opens the existing directory at urlPath for writing. Its fd pins

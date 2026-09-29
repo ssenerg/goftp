@@ -194,7 +194,7 @@ func TestListing(t *testing.T) {
 			t.Errorf("listing lacks %s", want)
 		}
 	}
-	for _, hidden := range []string{".env", ".git", "<script>"} {
+	for _, hidden := range []string{".env", ".git", "<script>.txt"} {
 		if strings.Contains(body, hidden) {
 			t.Errorf("listing exposes %q", hidden)
 		}
@@ -203,14 +203,16 @@ func TestListing(t *testing.T) {
 		strings.Index(body, `href="/a.txt"`) > strings.Index(body, `href="/B.txt"`) {
 		t.Error("expected directories first, then case-insensitive name order")
 	}
-	if strings.Contains(body, "Parent directory") {
-		t.Error("root listing should not link to a parent")
+	if strings.Contains(body, "Parent folder") || !strings.Contains(body, "1 folder · 4 files · 8 B") {
+		t.Error("root listing links to a parent or lacks the summary")
 	}
 
 	resp, body = f.do(t, "GET", "/sub/")
 	expectStatus(t, resp, 200)
-	if !strings.Contains(body, `href="/"`) || !strings.Contains(body, `href="/sub/c.txt"`) {
-		t.Error("sub listing lacks parent or file link")
+	for _, want := range []string{`<a href="/"><svg class="i kind"`, `href="/sub/c.txt"`, `<a href="/sub/" aria-current="page">sub</a>`, `<use href="#i-text"/>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sub listing lacks %s", want)
+		}
 	}
 
 	resp, body = f.do(t, "HEAD", "/")

@@ -25,8 +25,10 @@ import (
 // non-ASCII paths are long. Idle connections release it (ReduceMemoryUsage).
 const readBufferSize = 16 << 10
 
-const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-	"base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+// contentSecurityPolicy lets pages run their own script and upload to this
+// site, and nothing else.
+var contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src " + scriptHash +
+	"; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 
 const allowedMethods = "GET, HEAD, PUT, POST"
 
