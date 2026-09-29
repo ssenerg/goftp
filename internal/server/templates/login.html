@@ -1,0 +1,22 @@
+{{define "login"}}{{template "head" .}}
+<body>
+<div class="container">
+  <div class="card">
+    <h2><span style="color: var(--accent)">goftp</span> · Sign in</h2>
+    <p>Sign in to browse and transfer files.</p>
+    <form method="post" action="/.auth/login">
+      {{with .Error}}<div class="error" role="alert">{{.}}</div>{{end}}
+      <input type="hidden" name="next" value="{{.Next}}">
+      <label>Username
+        <input name="username" value="{{.Username}}" autocomplete="username" autocapitalize="none" spellcheck="false" required{{if not .Username}} autofocus{{end}}>
+      </label>
+      <label>Password
+        <input type="password" name="password" autocomplete="current-password" required{{if .Username}} autofocus{{end}}>
+      </label>
+      <button type="submit" class="primary">Sign in</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>
+{{end}}

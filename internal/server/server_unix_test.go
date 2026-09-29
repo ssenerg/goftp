@@ -54,7 +54,7 @@ func TestSymlinks(t *testing.T) {
 		"/deep/x":                 404,
 	}
 	for p, want := range tests {
-		resp, body := f.do(t, "GET", keyed(p))
+		resp, body := f.do(t, "GET", p)
 		if resp.StatusCode != want || strings.Contains(body, "secret") {
 			t.Errorf("%s: status %d, want %d (body %q)", p, resp.StatusCode, want, body)
 		}
@@ -79,7 +79,7 @@ func TestSpecialFilesDoNotBlock(t *testing.T) {
 		t.Skip("mkfifo:", err)
 	}
 	start := time.Now()
-	resp, _ := f.do(t, "GET", keyed("/fifo"))
+	resp, _ := f.do(t, "GET", "/fifo")
 	expectStatus(t, resp, 404)
 	if time.Since(start) > 2*time.Second {
 		t.Error("FIFO request blocked")
@@ -96,7 +96,7 @@ func TestNoFileDescriptorLeaks(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "f.txt", "0123456789")
 	f.write(t, "d/x", "x")
-	resp, _ := f.do(t, "GET", keyed("/f.txt"))
+	resp, _ := f.do(t, "GET", "/f.txt")
 	etag := resp.Header.Get("ETag")
 
 	countFDs := func() int {
@@ -108,12 +108,12 @@ func TestNoFileDescriptorLeaks(t *testing.T) {
 	}
 	before := countFDs()
 	for i := 0; i < 20; i++ {
-		f.do(t, "GET", keyed("/f.txt"))
-		f.do(t, "HEAD", keyed("/f.txt"))
 		f.do(t, "GET", "/f.txt")
-		f.do(t, "GET", keyed("/f.txt"), "If-None-Match", etag)
-		f.do(t, "GET", keyed("/f.txt"), "Range", "bytes=99-")
-		f.do(t, "GET", keyed("/f.txt"), "Range", "bytes=0-1,3-4")
+		f.do(t, "HEAD", "/f.txt")
+		f.do(t, "GET", "/f.txt")
+		f.do(t, "GET", "/f.txt", "If-None-Match", etag)
+		f.do(t, "GET", "/f.txt", "Range", "bytes=99-")
+		f.do(t, "GET", "/f.txt", "Range", "bytes=0-1,3-4")
 		f.do(t, "GET", "/d/")
 		f.do(t, "GET", "/d")
 	}
@@ -123,5 +123,24 @@ func TestNoFileDescriptorLeaks(t *testing.T) {
 	}
 	if after := countFDs(); after > before {
 		t.Errorf("file descriptors leaked: %d before, %d after", before, after)
+	}
+}
+
+func TestUploadIntoHiddenDirViaSymlink(t *testing.T) {
+	f := newFixture(t)
+	f.write(t, ".git/config", "secret")
+	if err := os.Symlink(".git", filepath.Join(f.dir, "pub")); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := f.send(t, "PUT", "/pub/x.txt", strings.NewReader("x")); resp.StatusCode != 409 {
+		t.Errorf("PUT through link: %d", resp.StatusCode)
+	}
+	form, ctype := multipartForm(t, formPart{field: "file", filename: "y.txt", content: "y"})
+	if resp, _ := f.send(t, "POST", "/pub/", form, "Content-Type", ctype); resp.StatusCode != 404 {
+		t.Errorf("form upload through link: %d", resp.StatusCode)
+	}
+	entries, _ := os.ReadDir(filepath.Join(f.dir, ".git"))
+	if len(entries) != 1 {
+		t.Errorf("files written into .git: %v", entries)
 	}
 }

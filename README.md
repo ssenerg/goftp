@@ -1,38 +1,139 @@
 # goftp
 
 A small resumable file server built on [Fiber v3](https://gofiber.io), with
-[Viper](https://github.com/spf13/viper) configuration and
-[Zap](https://github.com/uber-go/zap) logging.
+[Viper](https://github.com/spf13/viper) configuration,
+[Zap](https://github.com/uber-go/zap) logging, and users stored in
+Postgres whose access is decided by [Casbin](https://casbin.org) policies.
 
-- Directory listings are public; file downloads require the access key in a
-  query parameter: `https://host/path/file.iso?key=<SECURE_KEY>`.
+- Users sign in with a password; roles decide what they may do.
 - Range (single and multipart), `If-Range`, `If-None-Match` and
   `If-Modified-Since` are supported, so downloads can be resumed.
+- Uploads never expose partial files (see [Uploads](#uploads)).
 - Dotfiles are never listed or served. Paths are resolved with `os.Root`, so
   requests and symlinks cannot escape the served directory.
 
-## Usage
+## Quick start with Docker Compose
 
 ```sh
-export SECURE_KEY="$(openssl rand -hex 24)"   # at least 16 characters
-go run . --dir /srv/files --addr :8080
+cp .env.example .env        # set POSTGRES_PASSWORD, e.g. $(openssl rand -hex 24)
+docker compose up -d --build
+docker compose exec goftp goftp user add alice --role superadmin
 ```
 
-Flags: `--config`, `--dir`, `--addr`, `--query`. Every setting can also come
-from a config file (see [`config.example.yaml`](config.example.yaml)) or a
-`GOFTP_*` environment variable (`log.level` → `GOFTP_LOG_LEVEL`). Priority:
-flags > environment > config file > defaults. The key is read from
-`GOFTP_SECURE_KEY` or `SECURE_KEY`; it is intentionally not a flag, since
-command lines are visible to other local users.
+`user add` prints a temporary password. Open http://localhost:8080, sign in
+and choose a new password. Files live in the `files` volume, the database
+in `pgdata`; to serve a host directory instead, mount it at `/data` (and
+make it writable by UID 65532, the image's user, for uploads).
+
+The port is only published on 127.0.0.1: put a TLS-terminating reverse
+proxy in front and set `GOFTP_PROXY_HEADER` and `GOFTP_TRUSTED_PROXIES` in
+`.env` (see [`.env.example`](.env.example)), or mount a certificate and set
+`GOFTP_TLS_CERT_FILE`/`GOFTP_TLS_KEY_FILE`, then set `GOFTP_BIND=0.0.0.0`.
+
+## Users and roles
+
+Sign-up happens on the command line, which needs access to the database:
+
+```sh
+goftp user add bob --role operator   # prints a temporary password
+goftp user list
+goftp user passwd bob                # new temporary password, ends bob's sessions
+goftp user role bob admin
+goftp user delete bob
+```
+
+New and reset passwords are temporary: after signing in, users can do
+nothing but choose their own password (at least 12 characters), which ends
+all their other sessions.
+
+| Role         | May                                                          |
+|--------------|--------------------------------------------------------------|
+| `user`       | list directories and download (`read`)                       |
+| `operator`   | also upload new files (`write`)                              |
+| `admin`      | also replace existing files (`overwrite`)                    |
+| `superadmin` | every action (`*`)                                           |
+
+These are Casbin rules on URL paths, kept in the `casbin_rule` table and
+editable while the server runs (servers reload them within a moment):
+
+```sh
+goftp policy list
+goftp policy add anonymous '/public/*' read   # public downloads, no sign-in
+goftp policy add user:bob '/bob/*' write      # bob may upload into /bob/
+goftp policy remove anonymous '/public/*' read
+```
+
+`"/docs/*"` covers `/docs/` and everything below it; `"/docs/"` alone is
+just that listing. Listings only show what the visitor may open. Signed-in
+users may always do what anonymous visitors may. Rules apply to URL paths:
+a symlink follows the rules of its own path, not those of its target.
+
+## Running without Docker
+
+```sh
+export GOFTP_DATABASE_URL="postgres://goftp:secret@localhost:5432/goftp"
+goftp user add alice --role superadmin
+goftp --dir /srv/files --addr :8080       # same as: goftp serve ...
+```
+
+The schema is created or upgraded on startup (`goftp migrate` does just
+that). Every setting can also come from a config file (`--config`, see
+[`config.example.yaml`](config.example.yaml)) or a `GOFTP_*` environment
+variable (`log.level` → `GOFTP_LOG_LEVEL`). Priority: flags > environment >
+config file > defaults. The standard `PG*` variables (e.g. `PGPASSWORD`)
+work as well.
+
+## Clients
+
+Browsers get a sign-in form. Other clients exchange credentials for a
+session token and send it as a bearer token:
+
+```sh
+curl -s -H 'Content-Type: application/json' \
+  -d '{"username":"bob","password":"..."}' https://host/.auth/login
+# {"token":"...","expires_at":"...","must_change_password":false}
+curl -C - -O -H "Authorization: Bearer $TOKEN" https://host/dir/file.iso
+```
+
+A temporary password is changed with `POST /.auth/password`
+(`{"current_password":"...","new_password":"..."}`), which returns a new
+token. `POST /.auth/logout` ends the session. Sessions last
+`auth.session_ttl` (12h).
+
+## Uploads
+
+- Browser: listing pages show an upload form to users who may upload there.
+  Existing files are only replaced when "Replace existing" is checked.
+- curl: `curl -T file.iso -H "Authorization: Bearer $TOKEN" https://host/dir/`.
+  PUT replaces existing files unless `-H "If-None-Match: *"` is given, and
+  needs a Content-Length.
+
+The target directory must exist, and `upload.max_size` caps each file.
+
+Partial uploads are never listed or served. While `<name>` is uploaded, the
+lock file `.<name>.lock` keeps other uploads of it out, and the data goes to
+a hidden `.goftp-*.part` file that is renamed into place only once complete;
+until then the previous version, if any, stays available. Other tools can
+hide files they write in place the same way: create `.<name>.lock` before
+writing `<name>` and delete it afterwards (such locks are always honored).
+A running upload refreshes its lock every 15 seconds; a lock left behind by
+a goftp that stopped (crash, restart) is taken over by the next upload of
+that name once it is a minute old.
 
 ## Security notes
 
-- Serve over HTTPS (`tls.*` settings or a TLS-terminating proxy): the key
-  travels in the URL.
-- Wrong keys are rate limited per client (`limiter.*`): once the budget is
-  spent, further download attempts get 429 until the window ends. Behind a
-  reverse proxy, set `server.proxy_header` and `server.trusted_proxies`,
-  otherwise every client shares the proxy's budget.
+- Serve over HTTPS: passwords and session tokens travel with every sign-in
+  and request. Over HTTPS the session cookie is `Secure` and `__Host-`
+  prefixed.
+- Passwords are hashed with Argon2id; only SHA-256 hashes of session tokens
+  are stored.
+- Failed sign-ins (and wrong current passwords) are rate limited per client
+  (`limiter.*`), and each user can sign in at most 30 times a minute.
+  Behind a reverse proxy, set `server.proxy_header` and
+  `server.trusted_proxies`, otherwise every client shares the proxy's
+  budget and the server cannot tell that requests arrived over HTTPS.
+- Cross-site form posts and uploads are refused (`Sec-Fetch-Site`/`Origin`
+  checks, `SameSite=Lax` cookies).
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory and do not lead into a dotfile or dot-directory.
 
@@ -40,4 +141,6 @@ command lines are visible to other local users.
 
 ```sh
 go test -race ./...
+# Postgres-backed tests run when a database is given:
+GOFTP_TEST_DATABASE_URL="postgres://postgres:secret@localhost/goftp_test" go test ./...
 ```

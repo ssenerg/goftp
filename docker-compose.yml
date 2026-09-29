@@ -1,0 +1,45 @@
+# Usage:
+#   cp .env.example .env               # then set POSTGRES_PASSWORD
+#   docker compose up -d --build
+#   docker compose exec goftp goftp user add alice --role superadmin
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: goftp
+      POSTGRES_USER: goftp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "goftp", "-d", "goftp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  goftp:
+    build: .
+    image: goftp
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      GOFTP_DATABASE_URL: postgres://goftp@postgres:5432/goftp?sslmode=disable
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      GOFTP_UPLOAD_MAX_SIZE: ${GOFTP_UPLOAD_MAX_SIZE:-0}
+      GOFTP_SERVER_PROXY_HEADER: ${GOFTP_PROXY_HEADER:-}
+      GOFTP_SERVER_TRUSTED_PROXIES: ${GOFTP_TRUSTED_PROXIES:-}
+    ports:
+      - "${GOFTP_BIND:-127.0.0.1}:${GOFTP_PORT:-8080}:8080"
+    volumes:
+      - files:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  pgdata:
+  files:

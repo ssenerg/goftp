@@ -1,25 +1,19 @@
 package server
 
 import (
-	"crypto/sha256"
-	"crypto/subtle"
 	"errors"
 	"io/fs"
-	"math"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/gofiber/fiber/v3"
-	"go.uber.org/zap"
-)
 
-const deniedBody = "SIKTIR\n"
+	"goftp/internal/auth"
+)
 
 var errBadPath = errors.New("bad path")
 
@@ -31,6 +25,22 @@ func (s *Server) handle(c fiber.Ctx) error {
 	// Dotfiles and dot-directories (.git, .env, ...) are never served.
 	if hidden(urlPath) {
 		return fiber.ErrForbidden
+	}
+	// Checked before the path is looked up, so that the answer does not
+	// reveal what exists. The type is not known yet: either one will do.
+	mayRead := func(dir bool) (bool, error) { return s.allowed(c, object(urlPath, dir), auth.ActRead) }
+	ok, err := mayRead(wantDir)
+	if err == nil && !ok && !wantDir {
+		ok, err = mayRead(true)
+	}
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return s.deny(c)
+	}
+	if dir, name := path.Split(urlPath); name != "" && s.locked(rootName(path.Clean(dir)), name) {
+		return fiber.ErrNotFound
 	}
 
 	f, err := s.open(urlPath)
@@ -46,6 +56,13 @@ func (s *Server) handle(c fiber.Ctx) error {
 		_ = f.Close()
 		return err
 	}
+	if ok, err := mayRead(info.IsDir()); err != nil || !ok {
+		_ = f.Close()
+		if err != nil {
+			return err
+		}
+		return s.deny(c)
+	}
 
 	switch {
 	case info.IsDir():
@@ -54,10 +71,6 @@ func (s *Server) handle(c fiber.Ctx) error {
 	case !info.Mode().IsRegular():
 		_ = f.Close()
 		return fiber.ErrNotFound
-	}
-	if ok, err := s.authorize(c); !ok {
-		_ = f.Close()
-		return err
 	}
 	return s.serveFile(c, f, info, path.Base(urlPath))
 }
@@ -132,38 +145,4 @@ func (s *Server) openError(err error) error {
 	default:
 		return err
 	}
-}
-
-// authorize checks the access key, comparing SHA-256 digests in constant
-// time so neither the key nor its length leaks through timing. Wrong keys
-// count against the client's budget; once it is spent, attempts are
-// refused without revealing whether the key was right.
-func (s *Server) authorize(c fiber.Ctx) (bool, error) {
-	key := c.Query(s.cfg.Query)
-	valid := false
-	if key != "" {
-		sum := sha256.Sum256([]byte(key))
-		valid = subtle.ConstantTimeCompare(sum[:], s.keyHash[:]) == 1
-	}
-	if s.limiter != nil && key != "" {
-		if wait := s.limiter.attempt(clientKey(c.IP()), !valid, time.Now()); wait > 0 {
-			c.Set(fiber.HeaderRetryAfter, strconv.Itoa(int(math.Ceil(wait.Seconds()))))
-			return false, fiber.ErrTooManyRequests
-		}
-	}
-	if valid {
-		return true, nil
-	}
-
-	reason := "missing key"
-	if key != "" {
-		reason = "invalid key"
-	}
-	s.log.Warn("access denied",
-		zap.String("reason", reason),
-		zap.String("ip", c.IP()),
-		zap.String("path", c.Path()))
-	c.Set(fiber.HeaderCacheControl, "no-store")
-	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
-	return false, c.Status(fiber.StatusForbidden).SendString(deniedBody)
 }

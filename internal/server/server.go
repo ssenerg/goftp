@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -10,12 +9,15 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/helmet"
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"go.uber.org/zap"
 
+	"goftp/internal/auth"
 	"goftp/internal/config"
 )
 
@@ -24,20 +26,24 @@ import (
 const readBufferSize = 16 << 10
 
 const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-	"base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+	"base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
+const allowedMethods = "GET, HEAD, PUT, POST"
 
 type Server struct {
 	cfg       *config.Config
 	log       *zap.Logger
+	auth      *auth.Service
 	app       *fiber.App
 	root      *os.Root
 	rootPath  string
-	limiter   *failureLimiter
-	keyHash   [sha256.Size]byte
+	limiter   *rateLimiter // failed password checks per client
+	signIns   *rateLimiter // successful password checks per user
 	errEscape error
+	lockMu    sync.Mutex
 }
 
-func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
+func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
 	rootPath, err := filepath.EvalSymlinks(cfg.Dir)
 	if err != nil {
 		return nil, err
@@ -49,26 +55,28 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	s := &Server{
 		cfg:       cfg,
 		log:       log,
+		auth:      authSvc,
 		root:      root,
 		rootPath:  rootPath,
-		keyHash:   sha256.Sum256([]byte(cfg.SecureKey)),
 		errEscape: escapeError(root),
 	}
 
 	s.app = fiber.New(fiber.Config{
-		ErrorHandler:       s.handleError,
-		ReadTimeout:        cfg.Server.ReadTimeout,
-		WriteTimeout:       cfg.Server.WriteTimeout,
-		IdleTimeout:        cfg.Server.IdleTimeout,
-		ReadBufferSize:     readBufferSize,
-		ReduceMemoryUsage:  true,
-		GETOnly:            true,
-		CaseSensitive:      true,
-		StrictRouting:      true,
-		ProxyHeader:        cfg.Server.ProxyHeader,
-		TrustProxy:         cfg.Server.ProxyHeader != "",
-		TrustProxyConfig:   fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
-		EnableIPValidation: true,
+		ErrorHandler:      s.handleError,
+		ReadTimeout:       cfg.Server.ReadTimeout,
+		WriteTimeout:      cfg.Server.WriteTimeout,
+		IdleTimeout:       cfg.Server.IdleTimeout,
+		ReadBufferSize:    readBufferSize,
+		ReduceMemoryUsage: true,
+		// Uploads are streamed to disk instead of buffered in memory.
+		StreamRequestBody:            true,
+		DisablePreParseMultipartForm: true,
+		CaseSensitive:                true,
+		StrictRouting:                true,
+		ProxyHeader:                  cfg.Server.ProxyHeader,
+		TrustProxy:                   cfg.Server.ProxyHeader != "",
+		TrustProxyConfig:             fiber.TrustProxyConfig{Proxies: cfg.Server.TrustedProxies},
+		EnableIPValidation:           true,
 	})
 
 	hsts := 0
@@ -88,9 +96,20 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 		HSTSExcludeSubdomains: true,
 	}))
 	if cfg.Limiter.MaxFailures > 0 {
-		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
+		s.limiter = newRateLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
+	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
+	s.app.Use(s.checkOrigin, s.identify, s.requirePasswordChange)
+	s.app.Get(loginPath, s.loginPage)
+	s.app.Post(loginPath, s.login)
+	s.app.Post(logoutPath, s.logout)
+	s.app.Get(passwordPath, s.passwordPage)
+	s.app.Post(passwordPath, s.changePassword)
 	s.app.Get("/*", s.handle)
+	s.app.Put("/*", s.put)
+	s.app.Post("/*", s.postForm)
+	srv := s.app.Server()
+	srv.Handler = s.wrapHandler(srv.Handler)
 	return s, nil
 }
 
