@@ -347,7 +347,7 @@ func (s *Server) login(c fiber.Ctx) error {
 	sess, err := s.auth.Login(ctx, form["username"], form["password"])
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials):
-		s.log.Warn("login failed", zap.String("ip", c.IP()), zap.String("user", loggableName(form["username"])))
+		s.log.Warn("login failed", zap.String("ip", c.IP()), zap.String("user", loggableName(form["username"])), zap.Error(err))
 		return fail(fiber.StatusUnauthorized, "Wrong username or password.")
 	case errors.Is(err, auth.ErrBusy):
 		check.refund()

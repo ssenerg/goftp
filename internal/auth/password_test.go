@@ -68,7 +68,7 @@ func TestValidUsername(t *testing.T) {
 
 func TestTemporaryPassword(t *testing.T) {
 	a, b := TemporaryPassword(), TemporaryPassword()
-	if a == b || len(a) < MinPasswordLength || CheckPassword("someone", a) != nil {
+	if a == b || len(a) < MinPasswordLength || CheckPassword("someone", a) != nil || forgiveTemporary(a) != a {
 		t.Errorf("temporary passwords %q %q", a, b)
 	}
 }

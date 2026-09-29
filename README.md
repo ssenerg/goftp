@@ -137,6 +137,14 @@ that name once it is a minute old.
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory and do not lead into a dotfile or dot-directory.
 
+## Troubleshooting
+
+"Wrong username or password" at sign-in: `docker compose logs goftp | grep
+"login failed"` shows the name that was tried and whether no such user
+exists or the password was wrong. `goftp user list` shows the users, and
+`goftp user passwd NAME` gives one a new temporary password (temporary
+passwords ignore case and surrounding spaces).
+
 ## Development
 
 ```sh

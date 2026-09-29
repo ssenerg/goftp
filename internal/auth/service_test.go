@@ -289,3 +289,30 @@ func TestPasswordChangeEndsConcurrentLogins(t *testing.T) {
 		}
 	})
 }
+
+// Temporary passwords forgive spaces from copying and lower case from
+// typing; passwords that users chose are taken as they are.
+func TestTemporaryPasswordSlips(t *testing.T) {
+	svc, _ := authtest.NewService(time.Hour)
+	ctx := context.Background()
+	temp, err := svc.CreateUser(ctx, "carl", "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sloppy := " " + strings.ToLower(temp) + "\t"
+	sess, err := svc.Login(ctx, "carl", sloppy)
+	if err != nil {
+		t.Fatalf("sloppy temporary password: %v", err)
+	}
+	if _, err := svc.ChangePassword(ctx, sess.User, sloppy, "Chosen Password 1"); err != nil {
+		t.Fatalf("change with a sloppy temporary password: %v", err)
+	}
+	for _, pw := range []string{"chosen password 1", " Chosen Password 1", temp} {
+		if _, err := svc.Login(ctx, "carl", pw); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Errorf("Login(%q): %v", pw, err)
+		}
+	}
+	if _, err := svc.Login(ctx, "carl", "Chosen Password 1"); err != nil {
+		t.Error(err)
+	}
+}

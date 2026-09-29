@@ -68,9 +68,16 @@ func CheckPassword(username, password string) error {
 	return nil
 }
 
-// TemporaryPassword returns a random password for a new or reset account.
+// TemporaryPassword returns a random password for a new or reset account:
+// 26 upper-case letters and digits.
 func TemporaryPassword() string {
 	return rand.Text()
+}
+
+// forgiveTemporary undoes slips in entering a temporary password: spaces
+// picked up when copying it, lower-case letters when typing it.
+func forgiveTemporary(password string) string {
+	return strings.ToUpper(strings.TrimSpace(password))
 }
 
 // hashPassword returns an Argon2id hash in PHC string format.
