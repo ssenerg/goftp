@@ -15,10 +15,11 @@
     return i ? `${n.toFixed(1)} ${units[i]}` : `${n} B`;
   };
 
-  // The upload confirmation is shown once, not again on reload.
+  // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  if (params.has("uploaded")) {
+  if (params.has("uploaded") || params.has("created")) {
     params.delete("uploaded");
+    params.delete("created");
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
   }
 
@@ -58,6 +59,54 @@
         apply();
         filter.blur();
       }
+    });
+  }
+
+  // New folder: a popover whose errors show in place.
+  const box = $(".newfolder");
+  if (box) {
+    const form = $("form", box);
+    const name = $("input[name=folder]", form);
+    const error = $(".popover-error", form);
+    box.addEventListener("toggle", () => {
+      if (box.open) name.focus();
+    });
+    box.addEventListener("keydown", e => {
+      if (e.key === "Escape" && box.open) {
+        box.open = false;
+        $("summary", box).focus();
+      }
+    });
+    document.addEventListener("click", e => {
+      if (box.open && !box.contains(e.target)) box.open = false;
+    });
+    const submit = $("button[type=submit]", form);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      const folder = name.value.trim();
+      let status = 400;
+      if (folder !== "") {
+        submit.disabled = true;
+        try {
+          status = (await fetch(form.action, { method: "POST", body: new URLSearchParams({ folder }) })).status;
+        } catch {
+          status = 0;
+        }
+        submit.disabled = false;
+      }
+      if (status === 201) {
+        location.assign(form.action + "?created=" + encodeURIComponent(folder));
+        return;
+      }
+      error.textContent = {
+        0: "The connection was lost. Try again.",
+        400: "Folder names cannot be empty or very long, start with a dot, or contain / or \\.",
+        401: "You were signed out. Sign in and try again.",
+        403: "You may not create folders here.",
+        409: "Something with this name already exists here.",
+      }[status] || `The folder could not be created (error ${status}).`;
+      error.hidden = false;
+      name.select();
     });
   }
 

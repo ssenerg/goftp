@@ -72,14 +72,17 @@ func (s *Server) render(c fiber.Ctx, status int, name string, data any) error {
 type listing struct {
 	page
 	Path     string
+	Action   string // where this folder's forms post to
 	Crumbs   []crumb
 	Parent   string
 	Items    []listItem
 	Upload   *uploadForm
+	Mkdir    bool
 	Sort     string
 	Desc     bool
 	Summary  string
 	Uploaded int
+	Created  *listItem
 }
 
 type crumb struct {
@@ -101,6 +104,7 @@ type listItem struct {
 	ModTime string
 	ModISO  string
 	IsDir   bool
+	New     bool // just created
 	size    int64
 	mod     time.Time
 }
@@ -141,7 +145,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 			locked[target] = true
 		}
 	}
-	data := listing{page: s.page(c, "All files"), Path: urlPath, Crumbs: crumbs(urlPath)}
+	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)), Crumbs: crumbs(urlPath)}
 	data.Items = make([]listItem, 0, len(entries))
 	var (
 		dirs, files int
@@ -189,13 +193,24 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 	if n, err := strconv.Atoi(c.Query("uploaded")); err == nil && n > 0 {
 		data.Uploaded = n
 	}
+	// Only a folder that is listed is confirmed, so the link cannot be used
+	// to show made-up text.
+	if name := c.Query("created"); name != "" {
+		for i := range data.Items {
+			if it := &data.Items[i]; it.IsDir && it.Name == name {
+				it.New = true
+				data.Created = it
+			}
+		}
+	}
 	create, replace, err := s.uploadRights(c, object(urlPath, true))
 	if err != nil {
 		return err
 	}
 	if create || replace {
-		data.Upload = &uploadForm{Action: escapePath(object(urlPath, true)), Replace: replace}
+		data.Upload = &uploadForm{Action: data.Action, Replace: replace}
 	}
+	data.Mkdir = create
 	return s.render(c, fiber.StatusOK, "listing", data)
 }
 

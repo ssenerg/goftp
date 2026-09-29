@@ -53,7 +53,7 @@ all their other sessions.
 | Role         | May                                                          |
 |--------------|--------------------------------------------------------------|
 | `user`       | list directories and download (`read`)                       |
-| `operator`   | also upload new files (`write`)                              |
+| `operator`   | also upload new files and create folders (`write`)           |
 | `admin`      | also replace existing files (`overwrite`)                    |
 | `superadmin` | every action (`*`)                                           |
 
@@ -114,6 +114,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
   needs a Content-Length.
 
 The target directory must exist, and `upload.max_size` caps each file.
+Users who may upload new files into a folder (`write`) can also create
+folders in it, with the "New folder" button or
+`curl -d folder=photos -H "Authorization: Bearer $TOKEN" https://host/dir/`.
 
 Partial uploads are never listed or served. While `<name>` is uploaded, the
 lock file `.<name>.lock` keeps other uploads of it out, and the data goes to

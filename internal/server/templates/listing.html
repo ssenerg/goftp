@@ -12,19 +12,36 @@
   {{if .Uploaded}}
   <div class="alert success banner" id="uploaded" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Uploaded {{.Uploaded}} file{{if ne .Uploaded 1}}s{{end}}.</div>
   {{end}}
+  {{with .Created}}
+  <div class="alert success banner" id="created" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Created the folder <a href="{{.Href}}">{{.Name}}</a>.</span></div>
+  {{end}}
 
   <div class="head">
     <div>
       <h1>{{.Title}}{{if and .User (not .Upload)}} <span class="chip">View only</span>{{end}}</h1>
       <p class="summary">{{.Summary}}</p>
     </div>
-    {{if .Items}}
-    <label class="search" id="search" hidden>
-      <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
-      <input id="filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" autocomplete="off">
-      <kbd aria-hidden="true">/</kbd>
-    </label>
-    {{end}}
+    <div class="tools">
+      {{if .Items}}
+      <label class="search" id="search" hidden>
+        <svg class="i" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="filter" type="search" placeholder="Filter this folder" aria-label="Filter this folder" autocomplete="off">
+        <kbd aria-hidden="true">/</kbd>
+      </label>
+      {{end}}
+      {{if .Mkdir}}
+      <details class="newfolder">
+        <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-folder-plus"/></svg>New folder</summary>
+        <form method="post" action="{{.Action}}" class="popover">
+          <label class="field"><span>Folder name</span>
+            <input name="folder" required maxlength="200" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="popover-error" role="alert" hidden></p>
+          <div class="popover-actions"><button type="submit" class="btn primary small">Create folder</button></div>
+        </form>
+      </details>
+      {{end}}
+    </div>
   </div>
 
   {{with .Upload}}
@@ -64,7 +81,7 @@
         <tr class="up"><td class="name" colspan="3"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
         {{end}}
         {{range .Items}}
-        <tr data-name="{{.Key}}">
+        <tr data-name="{{.Key}}"{{if .New}} class="new"{{end}}>
           <td class="name"><a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>

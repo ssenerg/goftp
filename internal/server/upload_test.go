@@ -241,7 +241,7 @@ func TestFormUpload(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(f.dir, "sub", "c.txt")); err == nil {
 		t.Error("rejected form upload stored a file")
 	}
-	resp, _ = f.send(t, "POST", "/sub/", strings.NewReader("x=1"), "Content-Type", "application/x-www-form-urlencoded")
+	resp, _ = f.send(t, "POST", "/sub/", strings.NewReader("x=1"), "Content-Type", "text/plain")
 	expectStatus(t, resp, http.StatusUnsupportedMediaType)
 
 	// Existing files are kept unless replace is checked; the reply names
