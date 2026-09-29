@@ -1,6 +1,6 @@
 module goftp
 
-go 1.25.5
+go 1.27.1
 
 require (
 	github.com/go-viper/mapstructure/v2 v2.4.0
