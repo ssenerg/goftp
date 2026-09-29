@@ -2,7 +2,7 @@ package server
 
 import (
 	"bytes"
-	_ "embed"
+	"embed"
 	"fmt"
 	"html/template"
 	"io/fs"
@@ -13,15 +13,45 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+
+	"goftp/internal/auth"
 )
 
-//go:embed listing.html
-var listingHTML string
+//go:embed templates/*.html
+var templateFS embed.FS
 
-var listingTmpl = template.Must(template.New("listing").Parse(listingHTML))
+var pages = template.Must(template.ParseFS(templateFS, "templates/*.html"))
+
+// page holds what every page shows.
+type page struct {
+	Title     string
+	User      string
+	Role      string
+	Here      string
+	MinLength int
+}
+
+func (s *Server) page(c fiber.Ctx, title string) page {
+	p := page{Title: title, Here: c.OriginalURL(), MinLength: auth.MinPasswordLength}
+	if u := userOf(c); u != nil {
+		p.User = u.Username
+		p.Role = s.auth.Role(u.Username)
+	}
+	return p
+}
+
+func (s *Server) render(c fiber.Ctx, status int, name string, data any) error {
+	var buf bytes.Buffer
+	if err := pages.ExecuteTemplate(&buf, name, data); err != nil {
+		return err
+	}
+	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.Status(status).Send(buf.Bytes())
+}
 
 type listing struct {
-	Title  string
+	page
 	Path   string
 	Parent string
 	Items  []listItem
@@ -29,8 +59,8 @@ type listing struct {
 }
 
 type uploadForm struct {
-	Action   string
-	KeyField string
+	Action  string
+	Replace bool
 }
 
 type listItem struct {
@@ -63,7 +93,14 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 		if locked[e.Name()] {
 			continue
 		}
-		if item, ok := s.listItem(urlPath, e); ok {
+		item, ok := s.listItem(urlPath, e)
+		if !ok {
+			continue
+		}
+		// Only what the visitor may open is listed.
+		if ok, err := s.allowed(c, object(path.Join(urlPath, item.Name), item.IsDir), auth.ActRead); err != nil {
+			return err
+		} else if ok {
 			items = append(items, item)
 		}
 	}
@@ -80,21 +117,19 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath string, wantDir boo
 		return strings.Compare(a.Name, b.Name)
 	})
 
-	data := listing{Title: "/", Path: urlPath, Items: items}
-	if s.cfg.Upload.Enabled {
-		data.Upload = &uploadForm{Action: escapePath(strings.TrimSuffix(urlPath, "/") + "/"), KeyField: s.cfg.Query}
-	}
+	data := listing{page: s.page(c, "/"), Path: urlPath, Items: items}
 	if urlPath != "/" {
 		data.Title = path.Base(urlPath)
 		data.Parent = escapePath(strings.TrimSuffix(path.Dir(urlPath), "/") + "/")
 	}
-	var buf bytes.Buffer
-	if err := listingTmpl.Execute(&buf, data); err != nil {
+	create, replace, err := s.uploadRights(c, object(urlPath, true))
+	if err != nil {
 		return err
 	}
-	c.Set(fiber.HeaderContentType, fiber.MIMETextHTMLCharsetUTF8)
-	c.Set(fiber.HeaderCacheControl, "no-cache")
-	return c.Send(buf.Bytes())
+	if create || replace {
+		data.Upload = &uploadForm{Action: escapePath(object(urlPath, true)), Replace: replace}
+	}
+	return s.render(c, fiber.StatusOK, "listing", data)
 }
 
 // listItem hides dotfiles, non-regular files and symlinks that do not

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+{{define "head"}}<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -17,6 +17,7 @@
     --folder: #f0c36d;
     --file: #8b8d98;
     --hover-bg: #1e2230;
+    --error: #ff7b7b;
     --radius: 8px;
   }
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -34,6 +35,11 @@
   }
   header {
     margin-bottom: 1.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
   }
   header h1 {
     font-size: 1.2rem;
@@ -50,6 +56,11 @@
     margin-top: 0.35rem;
     word-break: break-all;
   }
+  .userbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; font-size: 0.85rem; color: var(--text-dim); }
+  .userbar strong { color: var(--text); font-weight: 500; }
+  .userbar a, .linkbutton { color: var(--accent); text-decoration: none; }
+  .userbar a:hover, .linkbutton:hover { text-decoration: underline; }
+  .linkbutton { font: inherit; background: none; border: none; cursor: pointer; }
   .table-wrap {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -81,8 +92,7 @@
   .icon-file { color: var(--file); }
   .size { color: var(--text-dim); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
   .date { color: var(--text-dim); white-space: nowrap; font-size: 0.85rem; text-align: right; }
-  .upload { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; font-size: 0.85rem; }
-  .upload input, .upload button {
+  input, button {
     font: inherit;
     color: var(--text);
     background: var(--surface);
@@ -90,11 +100,27 @@
     border-radius: var(--radius);
     padding: 0.4rem 0.6rem;
   }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
+  button.primary:hover { background: var(--accent-hover); }
+  .upload { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 1rem; font-size: 0.85rem; }
   .upload input[type=file] { flex: 1; min-width: 12rem; }
   .upload label { display: inline-flex; align-items: center; gap: 0.35rem; color: var(--text-dim); }
   .upload label input { padding: 0; }
-  .upload button { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
-  .upload button:hover { background: var(--accent-hover); }
+  .card {
+    max-width: 380px;
+    margin: 4rem auto 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.75rem;
+  }
+  .card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.35rem; }
+  .card p { font-size: 0.85rem; color: var(--text-dim); margin-bottom: 1rem; }
+  .card form { display: flex; flex-direction: column; gap: 0.85rem; }
+  .card label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.85rem; color: var(--text-dim); }
+  .card input { background: var(--bg); padding: 0.55rem 0.7rem; }
+  .card button.primary { padding: 0.55rem; margin-top: 0.25rem; }
+  .card .error { color: var(--error); font-size: 0.85rem; margin-bottom: 0.25rem; }
   .parent-link { display: inline-flex; align-items: center; gap: 0.3rem; margin-bottom: 0.75rem; }
   .parent-link a { color: var(--accent); text-decoration: none; font-size: 0.85rem; }
   .parent-link a:hover { text-decoration: underline; }
@@ -114,65 +140,20 @@
     .container { padding: 1rem; }
     .date-col { display: none; }
     td, th { padding: 0.5rem 0.75rem; }
+    .card { margin-top: 1.5rem; }
   }
 </style>
 </head>
-<body>
-<div class="container">
-  <header>
-    <h1><span class="logo">goftp</span></h1>
-    <div class="breadcrumb">{{.Path}}</div>
-  </header>
+{{end}}
 
-  {{with .Upload}}
-  <form class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
-    <input type="password" name="{{.KeyField}}" placeholder="Upload key" autocomplete="current-password" required>
-    <label><input type="checkbox" name="replace" value="1"> Replace existing</label>
-    <input type="file" name="file" multiple required>
-    <button type="submit">Upload</button>
-  </form>
-  {{end}}
-
-  {{with .Parent}}
-  <div class="parent-link">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
-    <a href="{{.}}">Parent directory</a>
-  </div>
-  {{end}}
-
-  <div class="table-wrap">
-  {{if .Items}}
-    <table>
-      <thead><tr>
-        <th>Name</th>
-        <th style="width:100px; text-align:right">Size</th>
-        <th class="date-col" style="width:160px; text-align:right">Modified</th>
-      </tr></thead>
-      <tbody>
-      {{range .Items}}
-        <tr>
-          <td>
-            <div class="name-cell">
-              {{if .IsDir}}
-              <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-              {{else}}
-              <svg class="icon icon-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              {{end}}
-              <a href="{{.Href}}">{{.Name}}</a>
-            </div>
-          </td>
-          <td class="size">{{.Size}}</td>
-          <td class="date date-col">{{.ModTime}}</td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
+{{define "userbar"}}
+<nav class="userbar">
+  {{if .User}}
+  <span>Signed in as <strong>{{.User}}</strong>{{with .Role}} ({{.}}){{end}}</span>
+  <a href="/.auth/password">Change password</a>
+  <form method="post" action="/.auth/logout"><button type="submit" class="linkbutton">Sign out</button></form>
   {{else}}
-    <div class="empty">This directory is empty.</div>
+  <a href="/.auth/login?next={{.Here}}">Sign in</a>
   {{end}}
-  </div>
-
-  <footer>goftp &middot; resumable file server</footer>
-</div>
-</body>
-</html>
+</nav>
+{{end}}

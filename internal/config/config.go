@@ -7,7 +7,6 @@ import (
 	"net"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,21 +16,24 @@ import (
 	"github.com/spf13/viper"
 )
 
-// MinKeyLength is the shortest accepted access key.
-const MinKeyLength = 16
-
-var queryNameRe = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
-
 type Config struct {
-	Dir       string        `mapstructure:"dir"`
-	Addr      string        `mapstructure:"addr"`
-	Query     string        `mapstructure:"query"`
-	SecureKey string        `mapstructure:"secure_key"`
-	Log       LogConfig     `mapstructure:"log"`
-	Server    ServerConfig  `mapstructure:"server"`
-	TLS       TLSConfig     `mapstructure:"tls"`
-	Limiter   LimiterConfig `mapstructure:"limiter"`
-	Upload    UploadConfig  `mapstructure:"upload"`
+	Dir      string         `mapstructure:"dir"`
+	Addr     string         `mapstructure:"addr"`
+	Database DatabaseConfig `mapstructure:"database"`
+	Auth     AuthConfig     `mapstructure:"auth"`
+	Log      LogConfig      `mapstructure:"log"`
+	Server   ServerConfig   `mapstructure:"server"`
+	TLS      TLSConfig      `mapstructure:"tls"`
+	Limiter  LimiterConfig  `mapstructure:"limiter"`
+	Upload   UploadConfig   `mapstructure:"upload"`
+}
+
+type DatabaseConfig struct {
+	URL string `mapstructure:"url"`
+}
+
+type AuthConfig struct {
+	SessionTTL time.Duration `mapstructure:"session_ttl"`
 }
 
 type LogConfig struct {
@@ -59,8 +61,6 @@ type LimiterConfig struct {
 }
 
 type UploadConfig struct {
-	Enabled bool     `mapstructure:"enabled"`
-	Key     string   `mapstructure:"key"`
 	MaxSize ByteSize `mapstructure:"max_size"`
 }
 
@@ -94,42 +94,35 @@ func decodeByteSize(from, to reflect.Type, data any) (any, error) {
 	return parseByteSize(data.(string))
 }
 
-// Load builds the configuration from defaults, an optional config file,
-// GOFTP_* environment variables and command-line flags (in rising priority).
-func Load(args []string) (*Config, error) {
+// Flags returns the command-line flags Load understands.
+func Flags() *pflag.FlagSet {
 	fs := pflag.NewFlagSet("goftp", pflag.ContinueOnError)
-	configFile := fs.String("config", "", "path to a config file (yaml, json or toml)")
+	fs.String("config", "", "path to a config file (yaml, json or toml)")
 	fs.String("dir", ".", "directory to serve")
 	fs.String("addr", ":8080", "listen address")
-	fs.String("query", "key", "query parameter that carries the access key")
-	if err := fs.Parse(args); err != nil {
-		return nil, err
-	}
-	if fs.NArg() > 0 {
-		return nil, fmt.Errorf("unexpected arguments: %v", fs.Args())
-	}
+	return fs
+}
 
+// Load builds the configuration from defaults, an optional config file,
+// GOFTP_* environment variables and the parsed flags (in rising priority).
+// Flags missing from fs are skipped.
+func Load(fs *pflag.FlagSet) (*Config, error) {
 	v := viper.New()
 	setDefaults(v)
-	for _, name := range []string{"dir", "addr", "query"} {
-		if err := v.BindPFlag(name, fs.Lookup(name)); err != nil {
-			return nil, err
+	for _, name := range []string{"dir", "addr"} {
+		if f := fs.Lookup(name); f != nil {
+			if err := v.BindPFlag(name, f); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	v.SetEnvPrefix("GOFTP")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
-	// SECURE_KEY is kept for compatibility with older deployments.
-	if err := v.BindEnv("secure_key", "GOFTP_SECURE_KEY", "SECURE_KEY"); err != nil {
-		return nil, err
-	}
-	if err := v.BindEnv("upload.key", "GOFTP_UPLOAD_KEY"); err != nil {
-		return nil, err
-	}
 
-	if *configFile != "" {
-		v.SetConfigFile(*configFile)
+	if configFile, _ := fs.GetString("config"); configFile != "" {
+		v.SetConfigFile(configFile)
 		if err := v.ReadInConfig(); err != nil {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
@@ -161,7 +154,10 @@ func rejectUnitlessDuration(from, to reflect.Type, data any) (any, error) {
 }
 
 func setDefaults(v *viper.Viper) {
-	v.SetDefault("secure_key", "")
+	v.SetDefault("dir", ".")
+	v.SetDefault("addr", ":8080")
+	v.SetDefault("database.url", "")
+	v.SetDefault("auth.session_ttl", 12*time.Hour)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "json")
 	v.SetDefault("server.read_timeout", 10*time.Second)
@@ -174,8 +170,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tls.key_file", "")
 	v.SetDefault("limiter.max_failures", 20)
 	v.SetDefault("limiter.window", time.Minute)
-	v.SetDefault("upload.enabled", false)
-	v.SetDefault("upload.key", "")
 	v.SetDefault("upload.max_size", 0)
 }
 
@@ -192,14 +186,11 @@ func (c *Config) normalize() error {
 	if c.Addr == "" {
 		errs = append(errs, errors.New("addr must not be empty"))
 	}
-	if !queryNameRe.MatchString(c.Query) {
-		errs = append(errs, fmt.Errorf("query %q must only contain letters, digits, '.', '_', '~' or '-'", c.Query))
+	if c.Database.URL == "" {
+		errs = append(errs, errors.New("database.url is required (set GOFTP_DATABASE_URL)"))
 	}
-	switch {
-	case c.SecureKey == "":
-		errs = append(errs, errors.New("secure key is required (set SECURE_KEY or GOFTP_SECURE_KEY)"))
-	case len(c.SecureKey) < MinKeyLength:
-		errs = append(errs, fmt.Errorf("secure key must be at least %d characters", MinKeyLength))
+	if c.Auth.SessionTTL < time.Minute {
+		errs = append(errs, errors.New("auth.session_ttl must be at least 1m"))
 	}
 
 	s := &c.Server
@@ -232,15 +223,6 @@ func (c *Config) normalize() error {
 	}
 	if c.Limiter.MaxFailures > 0 && c.Limiter.Window < time.Second {
 		errs = append(errs, errors.New("limiter.window must be at least 1s"))
-	}
-	if c.Upload.Enabled {
-		switch {
-		case len(c.Upload.Key) < MinKeyLength:
-			errs = append(errs, fmt.Errorf("upload key must be at least %d characters (set GOFTP_UPLOAD_KEY)", MinKeyLength))
-		case c.Upload.Key == c.SecureKey:
-			// Download links are shared; they must not grant write access.
-			errs = append(errs, errors.New("upload key must differ from the download key"))
-		}
 	}
 	if c.Upload.MaxSize < 0 {
 		errs = append(errs, errors.New("upload.max_size must not be negative"))

@@ -21,10 +21,22 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
+
+	"goftp/internal/auth"
 )
 
+// uploadRights reports whether the visitor may create new files and replace
+// existing ones at obj.
+func (s *Server) uploadRights(c fiber.Ctx, obj string) (create, replace bool, err error) {
+	if create, err = s.allowed(c, obj, auth.ActWrite); err != nil {
+		return false, false, err
+	}
+	replace, err = s.allowed(c, obj, auth.ActOverwrite)
+	return create, replace, err
+}
+
 // put stores the request body as the file at the request path, e.g.
-// curl -T file.iso -H "Authorization: Bearer $UPLOAD_KEY" https://host/dir/
+// curl -T file.iso -H "Authorization: Bearer $TOKEN" https://host/dir/
 // The parent directory must exist. "If-None-Match: *" refuses to replace an
 // existing file.
 func (s *Server) put(c fiber.Ctx) error {
@@ -39,8 +51,12 @@ func (s *Server) put(c fiber.Ctx) error {
 	if !validName(name) {
 		return fiber.ErrBadRequest
 	}
-	if ok, err := s.authorize(c, s.uploadKey(c), &s.uploadKeyHash); !ok {
+	create, replace, err := s.uploadRights(c, urlPath)
+	if err != nil {
 		return err
+	}
+	if !create && !replace {
+		return s.deny(c)
 	}
 	// A chunked body cut off between chunks looks complete; only a declared
 	// length lets truncated uploads be detected.
@@ -61,7 +77,8 @@ func (s *Server) put(c fiber.Ctx) error {
 	defer dir.Close()
 
 	body := s.requestBody(c)
-	created, size, err := s.receive(dir, name, body, c.Get(fiber.HeaderIfNoneMatch) != "*")
+	rights := uploadRights{create: create, replace: replace}
+	created, size, err := s.receive(dir, name, body, c.Get(fiber.HeaderIfNoneMatch) != "*", rights)
 	if errors.Is(err, errExists) {
 		return fiber.ErrPreconditionFailed
 	}
@@ -77,9 +94,8 @@ func (s *Server) put(c fiber.Ctx) error {
 }
 
 // postForm stores the files of a multipart/form-data upload (the listing
-// page's form) in the directory at the request path. The key and replace
-// fields have to come before the files. Existing files are only replaced
-// when asked to.
+// page's form) in the directory at the request path. The replace field has
+// to come before the files. Existing files are only replaced when asked to.
 func (s *Server) postForm(c fiber.Ctx) error {
 	urlPath, _, err := cleanPath(c.Path())
 	if err != nil {
@@ -88,6 +104,13 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	if hidden(urlPath) {
 		return fiber.ErrForbidden
 	}
+	// Each file is checked on its own; this spares reading the body of
+	// visitors who may not upload here at all.
+	if create, replace, err := s.uploadRights(c, object(urlPath, true)); err != nil {
+		return err
+	} else if !create && !replace {
+		return s.deny(c)
+	}
 	mediaType, params, err := mime.ParseMediaType(c.Get(fiber.HeaderContentType))
 	if err != nil || mediaType != "multipart/form-data" || params["boundary"] == "" {
 		return fiber.ErrUnsupportedMediaType
@@ -95,7 +118,6 @@ func (s *Server) postForm(c fiber.Ctx) error {
 
 	body := s.requestBody(c)
 	form := multipart.NewReader(body, params["boundary"])
-	key := s.uploadKey(c)
 	replace := false
 	var (
 		dir    *os.Root
@@ -115,12 +137,6 @@ func (s *Server) postForm(c fiber.Ctx) error {
 			return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
 		}
 		switch name := part.FileName(); {
-		case part.FormName() == s.cfg.Query && name == "":
-			v, err := io.ReadAll(io.LimitReader(part, 1024))
-			if err != nil {
-				return s.formError(c, stored, s.uploadError(body, fiber.ErrBadRequest))
-			}
-			key = string(v)
 		case part.FormName() == "replace" && name == "":
 			v, err := io.ReadAll(io.LimitReader(part, 16))
 			if err != nil {
@@ -129,9 +145,6 @@ func (s *Server) postForm(c fiber.Ctx) error {
 			replace = slices.Contains([]string{"1", "on", "true"}, string(v))
 		case part.FormName() == "file" && name != "":
 			if dir == nil {
-				if ok, err := s.authorize(c, key, &s.uploadKeyHash); !ok {
-					return err
-				}
 				if dir, err = s.uploadDir(urlPath); err != nil {
 					return err
 				}
@@ -139,7 +152,11 @@ func (s *Server) postForm(c fiber.Ctx) error {
 			if !validName(name) {
 				return s.formError(c, stored, fiber.ErrBadRequest)
 			}
-			created, size, err := s.receive(dir, name, part, replace)
+			create, mayReplace, err := s.uploadRights(c, path.Join(urlPath, name))
+			if err != nil {
+				return s.formError(c, stored, err)
+			}
+			created, size, err := s.receive(dir, name, part, replace, uploadRights{create: create, replace: mayReplace})
 			if errors.Is(err, errExists) {
 				err = fiber.ErrConflict
 			}
@@ -171,15 +188,6 @@ func (s *Server) formError(c fiber.Ctx, stored []string, err error) error {
 	return nil
 }
 
-// uploadKey takes the key from an "Authorization: Bearer" header, which
-// keeps it out of URLs and logs, or else from the query.
-func (s *Server) uploadKey(c fiber.Ctx) string {
-	if key, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer "); ok {
-		return key
-	}
-	return c.Query(s.cfg.Query)
-}
-
 // uploadDir opens the existing directory at urlPath for writing. Its fd pins
 // the directory, so later operations cannot be redirected by symlink swaps.
 func (s *Server) uploadDir(urlPath string) (*os.Root, error) {
@@ -209,11 +217,14 @@ func (s *Server) uploadDir(urlPath string) (*os.Root, error) {
 
 var errExists = errors.New("file exists")
 
+// uploadRights are the visitor's permissions for one upload target.
+type uploadRights struct{ create, replace bool }
+
 // receive stores body as name in dir. The data goes to a hidden temp file
 // that is renamed into place once complete, so partial data never appears
 // under the real name; the lock file keeps concurrent uploads out. Without
 // replace, an existing name yields errExists.
-func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool) (created bool, size int64, err error) {
+func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool, rights uploadRights) (created bool, size int64, err error) {
 	tmp := tempPrefix + rand.Text() + tempSuffix
 	release, err := s.acquireLock(dir, name, tmp)
 	if err != nil {
@@ -230,10 +241,14 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 		return false, 0, fiber.ErrConflict
 	case err == nil && !replace:
 		return false, 0, errExists
+	case err == nil && !rights.replace:
+		return false, 0, fiber.ErrForbidden
 	case err == nil:
 		created = false
 	case !errors.Is(err, fs.ErrNotExist):
 		return false, 0, err
+	case !rights.create:
+		return false, 0, fiber.ErrForbidden
 	}
 
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
@@ -248,7 +263,7 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 		err = cerr
 	}
 	if err == nil {
-		err = commit(dir, tmp, name, replace)
+		err = commit(dir, tmp, name, replace && rights.replace)
 	}
 	if err != nil {
 		return false, size, err
@@ -314,8 +329,13 @@ func validName(name string) bool {
 }
 
 func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool) {
+	user := auth.Anonymous
+	if u := userOf(c); u != nil {
+		user = u.Username
+	}
 	s.log.Info("upload",
 		zap.String("ip", c.IP()),
+		zap.String("user", user),
 		zap.String("path", urlPath),
 		zap.Int64("bytes", size),
 		zap.Bool("replaced", !created))
@@ -400,16 +420,27 @@ func (s *Server) finishBody(c fiber.Ctx, b *requestBody) {
 	}
 }
 
-// closeUnreadBody wraps the fasthttp handler, so it also covers responses
-// Fiber sends outside the middleware chain. fasthttp does not drain a
-// streamed request body the handler left unread and would parse the rest
-// as the next request, so such connections are closed.
-func closeUnreadBody(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+// wrapHandler wraps the fasthttp handler, so it also covers responses Fiber
+// sends outside the middleware chain. fasthttp does not drain a streamed
+// request body the handler left unread and would parse the rest as the next
+// request, so such connections are closed.
+func (s *Server) wrapHandler(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
 		next(ctx)
 		// ContentLength is -1 for chunked bodies, -2 when there is none.
 		if n := ctx.Request.Header.ContentLength(); (n > 0 || n == -1) && ctx.UserValue(bodyDoneKey) == nil {
 			ctx.SetConnectionClose()
+		}
+		// Fiber answers unknown methods without running any middleware; the
+		// client address is logged without proxy header processing.
+		if ctx.UserValue(logStateKey) == nil {
+			s.writeAccess(access{
+				ip:     ctx.RemoteIP().String(),
+				method: string(ctx.Method()),
+				path:   string(ctx.URI().PathOriginal()),
+				status: ctx.Response.StatusCode(),
+				start:  ctx.Time(),
+			}, int64(len(ctx.Response.Body())), nil)
 		}
 	}
 }

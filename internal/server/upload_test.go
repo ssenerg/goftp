@@ -7,23 +7,15 @@ import (
 	"io/fs"
 	"mime/multipart"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"goftp/internal/config"
 )
-
-const uploadKey = "upload-key-0123456789"
-
-func withUploads(c *config.Config) {
-	c.Upload = config.UploadConfig{Enabled: true, Key: uploadKey}
-}
-
-func upKeyed(p string) string { return p + "?key=" + url.QueryEscape(uploadKey) }
 
 func readFile(t *testing.T, dir, name string) string {
 	t.Helper()
@@ -73,32 +65,70 @@ func multipartForm(t *testing.T, parts ...formPart) (io.Reader, string) {
 	return &buf, w.FormDataContentType()
 }
 
-func TestUploadsDisabledByDefault(t *testing.T) {
+// Uploading takes write permission; replacing a file takes overwrite.
+func TestUploadRoles(t *testing.T) {
 	f := newFixture(t)
-	for _, method := range []string{"PUT", "POST"} {
-		resp, _ := f.send(t, method, upKeyed("/a.txt"), strings.NewReader("data"))
-		expectStatus(t, resp, 405)
-		if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
-			t.Errorf("Allow %q", got)
+	f.write(t, "old.txt", "old")
+
+	cases := []struct {
+		role, target, ifNoneMatch string
+		want                      int
+	}{
+		{"", "/new.txt", "", 401},
+		{"user", "/new.txt", "", 403},
+		{"operator", "/old.txt", "", 403},
+		{"operator", "/old.txt", "*", 412},
+		{"operator", "/new.txt", "", 201},
+		{"admin", "/old.txt", "", 204},
+		{"superadmin", "/old.txt", "", 204},
+	}
+	for _, tc := range cases {
+		headers := []string{}
+		if tc.ifNoneMatch != "" {
+			headers = append(headers, "If-None-Match", tc.ifNoneMatch)
+		}
+		resp, _ := f.as(tc.role).send(t, "PUT", tc.target, strings.NewReader(tc.role), headers...)
+		if resp.StatusCode != tc.want {
+			t.Errorf("%q PUT %s: status %d, want %d", tc.role, tc.target, resp.StatusCode, tc.want)
+		}
+		if tc.want == 401 && resp.Header.Get("WWW-Authenticate") != `Bearer realm="goftp"` {
+			t.Errorf("401 without challenge: %q", resp.Header.Get("WWW-Authenticate"))
 		}
 	}
-	if _, body := f.do(t, "GET", "/"); strings.Contains(body, "<form") {
-		t.Error("upload form shown although uploads are disabled")
+	if got := readFile(t, f.dir, "old.txt"); got != "superadmin" {
+		t.Errorf("old.txt = %q", got)
 	}
-	if _, err := os.Stat(filepath.Join(f.dir, "a.txt")); err == nil {
-		t.Error("file created although uploads are disabled")
+	if got := readFile(t, f.dir, "new.txt"); got != "operator" {
+		t.Errorf("new.txt = %q", got)
+	}
+
+	// The form offers what the visitor may do.
+	for role, want := range map[string][]string{
+		"user":     {},
+		"operator": {`name="file"`},
+		"admin":    {`name="file"`, `name="replace"`},
+	} {
+		_, body := f.as(role).do(t, "GET", "/")
+		for _, field := range []string{`name="file"`, `name="replace"`} {
+			if strings.Contains(body, field) != slices.Contains(want, field) {
+				t.Errorf("%s: form field %s shown: %v", role, field, strings.Contains(body, field))
+			}
+		}
+	}
+	if l := leftovers(f.dir); len(l) > 0 {
+		t.Errorf("leftover files: %v", l)
 	}
 }
 
 func TestPutUpload(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	f.write(t, "sub/keep.txt", "k")
 
-	resp, _ := f.send(t, "PUT", upKeyed("/sub/new.txt"), strings.NewReader("first"))
+	resp, _ := f.send(t, "PUT", "/sub/new.txt", strings.NewReader("first"))
 	expectStatus(t, resp, http.StatusCreated)
-	resp, _ = f.send(t, "PUT", "/sub/new.txt", strings.NewReader("second"), "Authorization", "Bearer "+uploadKey)
+	resp, _ = f.as("admin").send(t, "PUT", "/sub/new.txt", strings.NewReader("second"))
 	expectStatus(t, resp, http.StatusNoContent)
-	resp, _ = f.send(t, "PUT", upKeyed("/sub/new.txt"), strings.NewReader("third"), "If-None-Match", "*")
+	resp, _ = f.send(t, "PUT", "/sub/new.txt", strings.NewReader("third"), "If-None-Match", "*")
 	expectStatus(t, resp, http.StatusPreconditionFailed)
 	if got := readFile(t, f.dir, "sub/new.txt"); got != "second" {
 		t.Errorf("content %q", got)
@@ -106,24 +136,22 @@ func TestPutUpload(t *testing.T) {
 	if _, body := f.do(t, "GET", "/sub/"); !strings.Contains(body, `href="/sub/new.txt"`) {
 		t.Error("uploaded file not listed")
 	}
-	if resp, body := f.do(t, "GET", keyed("/sub/new.txt")); resp.StatusCode != 200 || body != "second" {
+	if resp, body := f.do(t, "GET", "/sub/new.txt"); resp.StatusCode != 200 || body != "second" {
 		t.Errorf("download: %d %q", resp.StatusCode, body)
 	}
 
 	tests := map[string]int{
-		keyed("/sub/x.txt"):            403, // the download key cannot upload
-		"/sub/x.txt":                   403,
-		upKeyed("/nope/x.txt"):         409,
-		upKeyed("/sub/keep.txt/x"):     409,
-		upKeyed("/sub"):                409,
-		upKeyed("/sub/"):               400,
-		upKeyed("/"):                   400,
-		upKeyed("/.env"):               403,
-		upKeyed("/sub/.hidden"):        403,
-		upKeyed("/sub/..%2f.x"):        403,
-		upKeyed("/sub/a%0Ab.txt"):      400,
-		upKeyed("/sub/%FF.txt"):        400,
-		upKeyed("/sub/%2e%2e%2fx.txt"): 201, // cleans to /x.txt
+		"/nope/x.txt":         409,
+		"/sub/keep.txt/x":     409,
+		"/sub":                409,
+		"/sub/":               400,
+		"/":                   400,
+		"/.env":               403,
+		"/sub/.hidden":        403,
+		"/sub/..%2f.x":        403,
+		"/sub/a%0Ab.txt":      400,
+		"/sub/%FF.txt":        400,
+		"/sub/%2e%2e%2fx.txt": 201, // cleans to /x.txt
 	}
 	for target, want := range tests {
 		if resp, _ := f.send(t, "PUT", target, strings.NewReader("x")); resp.StatusCode != want {
@@ -145,13 +173,13 @@ func TestPutUpload(t *testing.T) {
 }
 
 func TestUploadMaxSize(t *testing.T) {
-	f := newFixture(t, withUploads, func(c *config.Config) { c.Upload.MaxSize = 10 })
-	resp, _ := f.send(t, "PUT", upKeyed("/big.txt"), strings.NewReader(strings.Repeat("x", 11)))
+	f := newFixture(t, func(c *config.Config) { c.Upload.MaxSize = 10 })
+	resp, _ := f.send(t, "PUT", "/big.txt", strings.NewReader(strings.Repeat("x", 11)))
 	expectStatus(t, resp, http.StatusRequestEntityTooLarge)
 	if !resp.Close {
 		t.Error("connection kept open with an unread body")
 	}
-	resp, _ = f.send(t, "PUT", upKeyed("/ok.txt"), strings.NewReader(strings.Repeat("x", 10)))
+	resp, _ = f.send(t, "PUT", "/ok.txt", strings.NewReader(strings.Repeat("x", 10)))
 	expectStatus(t, resp, http.StatusCreated)
 	if _, err := os.Stat(filepath.Join(f.dir, "big.txt")); err == nil {
 		t.Error("oversized upload stored")
@@ -159,21 +187,20 @@ func TestUploadMaxSize(t *testing.T) {
 }
 
 func TestFormUpload(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	f.write(t, "sub/keep.txt", "k")
 
 	resp, body := f.do(t, "GET", "/sub/")
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.HasSuffix(csp, "form-action 'self'") {
 		t.Errorf("CSP %q", csp)
 	}
-	for _, want := range []string{`<form class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="key"`, `name="replace"`, `name="file"`} {
+	for _, want := range []string{`<form class="upload" method="post" enctype="multipart/form-data" action="/sub/">`, `name="replace"`, `name="file"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("listing lacks %s", want)
 		}
 	}
 
 	form, ctype := multipartForm(t,
-		formPart{field: "key", content: uploadKey},
 		formPart{field: "file", filename: "a.txt", content: "alpha"},
 		formPart{field: "file", filename: "../../b.txt", content: "beta"},
 	)
@@ -189,20 +216,21 @@ func TestFormUpload(t *testing.T) {
 	file := formPart{field: "file", filename: "c.txt", content: "gamma"}
 	cases := []struct {
 		name   string
+		role   string
 		target string
 		parts  []formPart
 		want   int
 	}{
-		{"key after file", "/sub/", []formPart{file, {field: "key", content: uploadKey}}, 403},
-		{"wrong key", "/sub/", []formPart{{field: "key", content: "wrong"}, file}, 403},
-		{"download key", "/sub/", []formPart{{field: "key", content: testKey}, file}, 403},
-		{"no files", "/sub/", []formPart{{field: "key", content: uploadKey}}, 400},
-		{"hidden name", "/sub/", []formPart{{field: "key", content: uploadKey}, {field: "file", filename: ".c.txt", content: "x"}}, 400},
-		{"not a directory", "/sub/keep.txt", []formPart{{field: "key", content: uploadKey}, file}, 404},
+		{"anonymous", "", "/sub/", []formPart{file}, 401},
+		{"user", "user", "/sub/", []formPart{file}, 403},
+		{"operator replacing", "operator", "/sub/", []formPart{{field: "replace", content: "1"}, {field: "file", filename: "a.txt", content: "x"}}, 403},
+		{"no files", "admin", "/sub/", nil, 400},
+		{"hidden name", "admin", "/sub/", []formPart{{field: "file", filename: ".c.txt", content: "x"}}, 400},
+		{"not a directory", "admin", "/sub/keep.txt", []formPart{file}, 404},
 	}
 	for _, tc := range cases {
 		form, ctype := multipartForm(t, tc.parts...)
-		if resp, _ := f.send(t, "POST", tc.target, form, "Content-Type", ctype); resp.StatusCode != tc.want {
+		if resp, _ := f.as(tc.role).send(t, "POST", tc.target, form, "Content-Type", ctype); resp.StatusCode != tc.want {
 			t.Errorf("%s: status %d, want %d", tc.name, resp.StatusCode, tc.want)
 		}
 	}
@@ -215,7 +243,6 @@ func TestFormUpload(t *testing.T) {
 	// Existing files are kept unless replace is checked; the reply names
 	// the files stored before the failure.
 	form, ctype = multipartForm(t,
-		formPart{field: "key", content: uploadKey},
 		formPart{field: "file", filename: "d.txt", content: "delta"},
 		formPart{field: "file", filename: "a.txt", content: "changed"},
 	)
@@ -225,14 +252,12 @@ func TestFormUpload(t *testing.T) {
 		t.Errorf("no-replace upload: %q, a.txt=%q", body, readFile(t, f.dir, "sub/a.txt"))
 	}
 	form, ctype = multipartForm(t,
-		formPart{field: "key", content: uploadKey},
 		formPart{field: "replace", content: "0"},
 		formPart{field: "file", filename: "a.txt", content: "changed"},
 	)
 	resp, _ = f.send(t, "POST", "/sub/", form, "Content-Type", ctype)
 	expectStatus(t, resp, http.StatusConflict)
 	form, ctype = multipartForm(t,
-		formPart{field: "key", content: uploadKey},
 		formPart{field: "replace", content: "1"},
 		formPart{field: "file", filename: "a.txt", content: "changed"},
 	)
@@ -247,7 +272,7 @@ func TestFormUpload(t *testing.T) {
 }
 
 func TestLockFiles(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	past := time.Now().Add(-2 * time.Hour)
 	// Abandoned by a crashed goftp: taken over by the next upload.
 	f.write(t, "stale.txt", "old")
@@ -283,14 +308,14 @@ func TestLockFiles(t *testing.T) {
 			t.Errorf("locked %s is listed", name)
 		}
 	}
-	for target, want := range map[string]int{keyed("/busy.txt"): 404, "/busydir/": 404, keyed("/live.txt"): 200} {
+	for target, want := range map[string]int{"/busy.txt": 404, "/busydir/": 404, "/live.txt": 200} {
 		if resp, _ := f.do(t, "GET", target); resp.StatusCode != want {
 			t.Errorf("GET %s: status %d, want %d", target, resp.StatusCode, want)
 		}
 	}
 
 	for target, want := range map[string]int{"/busy.txt": 409, "/evil.txt": 409, "/live.txt": 409, "/stale.txt": 204} {
-		if resp, _ := f.send(t, "PUT", upKeyed(target), strings.NewReader("new")); resp.StatusCode != want {
+		if resp, _ := f.send(t, "PUT", target, strings.NewReader("new")); resp.StatusCode != want {
 			t.Errorf("PUT %s: status %d, want %d", target, resp.StatusCode, want)
 		}
 	}
@@ -332,28 +357,16 @@ func TestCommitWithoutReplaceIsAtomic(t *testing.T) {
 
 // With uploads on, bodyless requests must keep their connection alive.
 func TestKeepAliveWithUploads(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	f.write(t, "a.txt", "a")
-	for _, target := range []string{"/", keyed("/a.txt")} {
+	for _, target := range []string{"/", "/a.txt"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			if resp, _ := f.do(t, method, target); resp.Close {
 				t.Errorf("%s %s closes the connection", method, target)
 			}
 		}
 	}
-	if resp, _ := f.send(t, "PUT", upKeyed("/b.txt"), strings.NewReader("b")); resp.StatusCode != 201 || resp.Close {
+	if resp, _ := f.send(t, "PUT", "/b.txt", strings.NewReader("b")); resp.StatusCode != 201 || resp.Close {
 		t.Errorf("completed upload: status %d, close %v", resp.StatusCode, resp.Close)
 	}
-}
-
-func TestUploadKeyLimiter(t *testing.T) {
-	f := newFixture(t, withUploads, func(c *config.Config) {
-		c.Limiter = config.LimiterConfig{MaxFailures: 2, Window: time.Minute}
-	})
-	for i := 0; i < 2; i++ {
-		resp, _ := f.send(t, "PUT", "/a.txt?key=guess", strings.NewReader("x"))
-		expectStatus(t, resp, 403)
-	}
-	resp, _ := f.send(t, "PUT", upKeyed("/a.txt"), strings.NewReader("x"))
-	expectStatus(t, resp, http.StatusTooManyRequests)
 }

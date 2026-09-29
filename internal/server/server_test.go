@@ -25,12 +25,14 @@ import (
 	"goftp/internal/config"
 )
 
-const testKey = "test-key-0123456789"
-
 type fixture struct {
 	srv  *Server
 	dir  string
 	logs *logSink
+	auth *testAuth
+	// token is sent by do and send unless they are given an Authorization
+	// header; "" makes them anonymous.
+	token string
 }
 
 // logSink captures JSON log lines exactly as production would encode them.
@@ -67,14 +69,21 @@ func (l *logSink) raw() string {
 	return l.buf.String()
 }
 
+// newFixture serves a temporary directory, sending requests as superadmin.
+// Its users are shared with other tests, so tests that change users or
+// policies use newFixtureWith.
 func newFixture(t *testing.T, mutate ...func(*config.Config)) *fixture {
+	t.Helper()
+	return newFixtureWith(t, sharedAuth(), mutate...)
+}
+
+func newFixtureWith(t *testing.T, ta *testAuth, mutate ...func(*config.Config)) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &config.Config{
-		Dir:       dir,
-		Addr:      "127.0.0.1:0",
-		Query:     "key",
-		SecureKey: testKey,
+		Dir:  dir,
+		Addr: "127.0.0.1:0",
+		Auth: config.AuthConfig{SessionTTL: time.Hour},
 		Server: config.ServerConfig{
 			ReadTimeout:     5 * time.Second,
 			WriteTimeout:    5 * time.Second,
@@ -87,12 +96,23 @@ func newFixture(t *testing.T, mutate ...func(*config.Config)) *fixture {
 	}
 	logs := &logSink{}
 	enc := zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig())
-	srv, err := New(cfg, zap.New(zapcore.NewCore(enc, logs, zapcore.DebugLevel)))
+	srv, err := New(cfg, zap.New(zapcore.NewCore(enc, logs, zapcore.DebugLevel)), ta.svc)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = srv.Close() })
-	return &fixture{srv: srv, dir: dir, logs: logs}
+	return &fixture{srv: srv, dir: dir, logs: logs, auth: ta, token: ta.tokens["superadmin"]}
+}
+
+// as returns a copy of f that sends requests as a user with role, or
+// anonymously for "".
+func (f *fixture) as(role string) *fixture {
+	c := *f
+	c.token = f.auth.tokens[role]
+	if role != "" && c.token == "" {
+		panic("no test user with role " + role)
+	}
+	return &c
 }
 
 func (f *fixture) write(t *testing.T, name, content string) {
@@ -125,8 +145,15 @@ func (f *fixture) send(t *testing.T, method, rawURI string, reqBody io.Reader, h
 		}
 		req.URL = &url.URL{Path: decoded, RawPath: p, RawQuery: q}
 	}
+	withToken := f.token != ""
 	for i := 0; i+1 < len(headers); i += 2 {
+		if http.CanonicalHeaderKey(headers[i]) == "Authorization" {
+			withToken = false
+		}
 		req.Header.Set(headers[i], headers[i+1])
+	}
+	if withToken {
+		req.Header.Set("Authorization", "Bearer "+f.token)
 	}
 	resp, err := f.srv.App().Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
 	if err != nil {
@@ -139,8 +166,6 @@ func (f *fixture) send(t *testing.T, method, rawURI string, reqBody io.Reader, h
 	}
 	return resp, string(body)
 }
-
-func keyed(p string) string { return p + "?key=" + url.QueryEscape(testKey) }
 
 func expectStatus(t *testing.T, resp *http.Response, want int) {
 	t.Helper()
@@ -202,7 +227,7 @@ func TestSecurityHeaders(t *testing.T) {
 		"X-Content-Type-Options":  "nosniff",
 		"X-Frame-Options":         "DENY",
 		"Referrer-Policy":         "no-referrer",
-		"Content-Security-Policy": contentSecurityPolicy + "'none'",
+		"Content-Security-Policy": contentSecurityPolicy,
 	}
 	for k, v := range want {
 		if got := resp.Header.Get(k); got != v {
@@ -222,7 +247,7 @@ func TestDirectoryRedirect(t *testing.T) {
 		"//sub%20dir":               "/sub%20dir/",
 		"/sub%20dir/.":              "/sub%20dir/",
 		"/sub%20dir/x/..":           "/sub%20dir/",
-		keyed("/sub%20dir"):         "/sub%20dir/",
+		"/sub%20dir?a=b":            "/sub%20dir/",
 		"/./sub%20dir/../sub%20dir": "/sub%20dir/",
 	} {
 		resp, _ := f.do(t, "GET", raw)
@@ -233,19 +258,11 @@ func TestDirectoryRedirect(t *testing.T) {
 	}
 }
 
-func TestDownloadAuth(t *testing.T) {
+func TestDownload(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "docs/report.txt", "hello world")
 
-	for _, target := range []string{"/docs/report.txt", "/docs/report.txt?key=wrong", "/docs/report.txt?key=", "/docs/report.txt?KEY=" + testKey} {
-		resp, body := f.do(t, "GET", target)
-		expectStatus(t, resp, 403)
-		if body != deniedBody || resp.Header.Get("Content-Disposition") != "" || resp.Header.Get("ETag") != "" {
-			t.Errorf("%s: leaked content or metadata: %q %v", target, body, resp.Header)
-		}
-	}
-
-	resp, body := f.do(t, "GET", keyed("/docs/report.txt"))
+	resp, body := f.as("user").do(t, "GET", "/docs/report.txt")
 	expectStatus(t, resp, 200)
 	if body != "hello world" {
 		t.Errorf("body %q", body)
@@ -266,16 +283,10 @@ func TestDownloadAuth(t *testing.T) {
 		t.Error("missing validators")
 	}
 
-	resp, body = f.do(t, "HEAD", keyed("/docs/report.txt"))
+	resp, body = f.do(t, "HEAD", "/docs/report.txt")
 	expectStatus(t, resp, 200)
 	if body != "" || resp.Header.Get("Content-Length") != "11" {
 		t.Errorf("HEAD: body %q, length %q", body, resp.Header.Get("Content-Length"))
-	}
-
-	resp, body = f.do(t, "HEAD", "/docs/report.txt")
-	expectStatus(t, resp, 403)
-	if body != "" {
-		t.Errorf("HEAD denied body %q", body)
 	}
 }
 
@@ -284,7 +295,7 @@ func TestContentDispositionEncoding(t *testing.T) {
 	f.write(t, "rapport été.txt", "x")
 	f.write(t, `q"uote.txt`, "x")
 	for name, raw := range map[string]string{"rapport été.txt": "/rapport%20%C3%A9t%C3%A9.txt", `q"uote.txt`: "/q%22uote.txt"} {
-		resp, _ := f.do(t, "GET", keyed(raw))
+		resp, _ := f.do(t, "GET", raw)
 		expectStatus(t, resp, 200)
 		_, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition"))
 		if err != nil || params["filename"] != name {
@@ -330,7 +341,7 @@ func TestPathSafety(t *testing.T) {
 	for raw, want := range tests {
 		target := raw
 		if want != 403 && want != 400 {
-			target = keyed(raw)
+			target = raw
 		}
 		resp, body := f.do(t, "GET", target)
 		if resp.StatusCode != want {
@@ -347,7 +358,7 @@ func TestRanges(t *testing.T) {
 	const content = "0123456789abcdefghij"
 	f.write(t, "f.bin", content)
 	f.write(t, "empty", "")
-	target := keyed("/f.bin")
+	target := "/f.bin"
 
 	tests := []struct {
 		rng, body, contentRange string
@@ -369,7 +380,7 @@ func TestRanges(t *testing.T) {
 		}
 	}
 
-	resp, body := f.do(t, "GET", keyed("/empty"), "Range", "bytes=0-")
+	resp, body := f.do(t, "GET", "/empty", "Range", "bytes=0-")
 	expectStatus(t, resp, 200)
 	if body != "" || resp.Header.Get("Content-Type") != "application/octet-stream" {
 		t.Errorf("empty file: %q %q", body, resp.Header.Get("Content-Type"))
@@ -386,7 +397,7 @@ func TestMultipartRanges(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "f.bin", "0123456789abcdefghij")
 
-	resp, body := f.do(t, "GET", keyed("/f.bin"), "Range", "bytes=0-1, 5-6, -2")
+	resp, body := f.do(t, "GET", "/f.bin", "Range", "bytes=0-1, 5-6, -2")
 	expectStatus(t, resp, 206)
 	if got := resp.Header.Get("Content-Length"); got != strconv.Itoa(len(body)) {
 		t.Fatalf("Content-Length %s, body %d bytes", got, len(body))
@@ -415,7 +426,7 @@ func TestMultipartRanges(t *testing.T) {
 func TestConditionalRequests(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "f.txt", "0123456789")
-	target := keyed("/f.txt")
+	target := "/f.txt"
 
 	resp, _ := f.do(t, "GET", target)
 	etag, lastMod := resp.Header.Get("ETag"), resp.Header.Get("Last-Modified")
@@ -449,23 +460,26 @@ func TestConditionalRequests(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	f := newFixture(t)
-	for _, method := range []string{"POST", "PUT", "DELETE", "OPTIONS"} {
+	for _, method := range []string{"DELETE", "OPTIONS", "PATCH"} {
 		resp, _ := f.do(t, method, "/")
 		expectStatus(t, resp, 405)
-		if got := resp.Header.Get("Allow"); got != "GET, HEAD" {
+		if got := resp.Header.Get("Allow"); got != "GET, HEAD, PUT, POST" {
 			t.Errorf("%s: Allow %q", method, got)
 		}
 	}
+	// Methods unknown to Fiber.
+	resp, _ := f.do(t, "PROPFIND", "/")
+	expectStatus(t, resp, http.StatusNotImplemented)
 }
 
 func TestAccessLog(t *testing.T) {
 	f := newFixture(t)
 	f.write(t, "a.txt", "hello")
 
-	f.do(t, "GET", keyed("/a.txt"))
-	f.do(t, "HEAD", keyed("/a.txt"))
-	f.do(t, "GET", "/a.txt?key=wrong")
-	f.do(t, "POST", "/a.txt")
+	f.do(t, "GET", "/a.txt?q=1")
+	f.do(t, "HEAD", "/a.txt")
+	f.as("").do(t, "GET", "/a.txt")
+	f.do(t, "DELETE", "/a.txt")
 	f.do(t, "PROPFIND", "/a.txt")
 	f.do(t, "GET", "/missing")
 	f.do(t, "GET", "/")
@@ -477,84 +491,16 @@ func TestAccessLog(t *testing.T) {
 	want := []string{
 		"GET /a.txt 200 5",
 		"HEAD /a.txt 200 0",
-		"GET /a.txt 403 7",
-		"POST /a.txt 405 18",
-		"PROPFIND /a.txt 405 18",
+		"GET /a.txt 401 12",
+		"DELETE /a.txt 405 18",
+		"PROPFIND /a.txt 501 15",
 		"GET /missing 404 9",
 	}
 	if len(got) != len(want)+1 || strings.Join(got[:len(want)], "|") != strings.Join(want, "|") {
 		t.Errorf("access log:\n got %q\nwant %q (+ listing)", got, want)
 	}
-
-	denied := f.logs.entries("access denied")
-	if len(denied) != 1 || denied[0]["reason"] != "invalid key" {
-		t.Errorf("access denied entries: %v", denied)
-	}
-	if strings.Contains(f.logs.raw(), testKey) || strings.Contains(f.logs.raw(), "key=") {
-		t.Error("access key or query string leaked into logs")
-	}
-}
-
-func TestLimiter(t *testing.T) {
-	f := newFixture(t, func(c *config.Config) {
-		c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute}
-	})
-	f.write(t, "a.txt", "a")
-
-	// Only wrong keys count: successes, missing keys and other errors don't.
-	for i := 0; i < 5; i++ {
-		for target, want := range map[string]int{keyed("/a.txt"): 200, "/a.txt": 403, "/nope": 404} {
-			resp, _ := f.do(t, "GET", target)
-			expectStatus(t, resp, want)
-		}
-		resp, _ := f.do(t, "POST", "/a.txt")
-		expectStatus(t, resp, 405)
-	}
-	for i := 0; i < 3; i++ {
-		resp, _ := f.do(t, "GET", "/a.txt?key=guess"+strconv.Itoa(i))
-		expectStatus(t, resp, 403)
-	}
-	// The budget is spent: even the right key is refused without being checked.
-	resp, body := f.do(t, "GET", keyed("/a.txt"))
-	expectStatus(t, resp, http.StatusTooManyRequests)
-	if ra, err := strconv.Atoi(resp.Header.Get("Retry-After")); err != nil || ra < 59 || ra > 60 || body != "Too Many Requests" {
-		t.Errorf("429 response: Retry-After %q, body %q", resp.Header.Get("Retry-After"), body)
-	}
-	// Listings stay public.
-	resp, _ = f.do(t, "GET", "/")
-	expectStatus(t, resp, 200)
-}
-
-// Concurrent guesses must not slip past the budget.
-func TestLimiterConcurrentGuesses(t *testing.T) {
-	f := newFixture(t, func(c *config.Config) {
-		c.Limiter = config.LimiterConfig{MaxFailures: 3, Window: time.Minute}
-	})
-	f.write(t, "a.txt", "a")
-
-	var (
-		wg     sync.WaitGroup
-		mu     sync.Mutex
-		counts = map[int]int{}
-	)
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			req := httptest.NewRequest("GET", "/a.txt?key=guess"+strconv.Itoa(i), nil)
-			resp, err := f.srv.App().Test(req, fiber.TestConfig{Timeout: 5 * time.Second})
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			mu.Lock()
-			counts[resp.StatusCode]++
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-	if counts[403] != 3 || counts[429] != 97 {
-		t.Errorf("status counts %v, want 3×403 and 97×429", counts)
+	if strings.Contains(f.logs.raw(), f.token) || strings.Contains(f.logs.raw(), "q=1") {
+		t.Error("session token or query string leaked into logs")
 	}
 }
 
@@ -619,7 +565,7 @@ func TestLongNonASCIIPath(t *testing.T) {
 	if len(raw) < 9000 {
 		t.Fatalf("path only %d bytes", len(raw))
 	}
-	resp, body := f.do(t, "GET", keyed(raw), "Cookie", "session="+strings.Repeat("c", 1024))
+	resp, body := f.do(t, "GET", raw, "Cookie", "session="+strings.Repeat("c", 1024))
 	if resp.StatusCode != 200 || body != "deep" {
 		t.Fatalf("status %d, body %q", resp.StatusCode, body)
 	}

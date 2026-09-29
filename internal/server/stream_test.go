@@ -16,6 +16,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,7 +69,7 @@ func sparseFile(t *testing.T, dir, name string, size int64) {
 	}
 }
 
-func dialGet(t *testing.T, addr, target string) (net.Conn, *bufio.Reader, *http.Response) {
+func dialGet(t *testing.T, addr, target, token string) (net.Conn, *bufio.Reader, *http.Response) {
 	t.Helper()
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -77,7 +79,7 @@ func dialGet(t *testing.T, addr, target string) (net.Conn, *bufio.Reader, *http.
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetReadBuffer(64 << 10)
 	}
-	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: test\r\n\r\n", target)
+	fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: test\r\nAuthorization: Bearer %s\r\n\r\n", target, token)
 	br := bufio.NewReaderSize(conn, 64<<10)
 	resp, err := http.ReadResponse(br, nil)
 	if err != nil {
@@ -98,7 +100,7 @@ func TestSlowDownloadOutlivesWriteTimeout(t *testing.T) {
 	addr, _ := startServer(t, f)
 
 	start := time.Now()
-	_, _, resp := dialGet(t, addr, keyed("/big.bin"))
+	_, _, resp := dialGet(t, addr, "/big.bin", f.token)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -137,7 +139,7 @@ func TestStalledClientIsDisconnected(t *testing.T) {
 	sparseFile(t, f.dir, "huge.bin", size)
 	addr, _ := startServer(t, f)
 
-	conn, br, resp := dialGet(t, addr, keyed("/huge.bin"))
+	conn, br, resp := dialGet(t, addr, "/huge.bin", f.token)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
@@ -194,7 +196,7 @@ func TestShutdownWaitsForDownloads(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	_, _, resp := dialGet(t, addr, keyed("/big.bin"))
+	_, _, resp := dialGet(t, addr, "/big.bin", f.token)
 	received := make(chan int64, 1)
 	go func() {
 		buf := make([]byte, 1<<20)
@@ -296,8 +298,14 @@ func TestTLS(t *testing.T) {
 	f.write(t, "a.txt", "secure")
 	addr, _ := startServer(t, f)
 
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
-	resp, err := client.Get("https://" + addr + keyed("/a.txt"))
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: jar, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	base := "https://" + addr
+	name := userOfRole("user")
+	resp, err := client.PostForm(base+loginPath, url.Values{"username": {name}, "password": {testPassword(name)}, "next": {"/a.txt"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +316,11 @@ func TestTLS(t *testing.T) {
 	}
 	if got := resp.Header.Get("Strict-Transport-Security"); got != "max-age=31536000" {
 		t.Errorf("HSTS header %q", got)
+	}
+	// Over HTTPS the cookie is Secure and has the __Host- prefix.
+	cookies := resp.Request.Response.Cookies()
+	if len(cookies) != 1 || cookies[0].Name != secureCookieName || !cookies[0].Secure || !cookies[0].HttpOnly {
+		t.Errorf("session cookie %v", cookies)
 	}
 }
 

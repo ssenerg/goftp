@@ -41,7 +41,7 @@ func startUpload(t *testing.T, f *fixture, addr, name string, data []byte) net.C
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	fmt.Fprintf(conn, "PUT /%s HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n", name, uploadKey, len(data))
+	fmt.Fprintf(conn, "PUT /%s HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n", name, f.token, len(data))
 	if _, err := conn.Write(data[:len(data)/2]); err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func startUpload(t *testing.T, f *fixture, addr, name string, data []byte) net.C
 }
 
 func TestPartialUploadIsHidden(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	addr, _ := startServer(t, f)
 	data := bytes.Repeat([]byte("0123456789"), 100_000)
 	conn := startUpload(t, f, addr, "video.bin", data)
@@ -65,10 +65,10 @@ func TestPartialUploadIsHidden(t *testing.T) {
 	if _, body := f.do(t, "GET", "/"); strings.Contains(body, "video.bin") {
 		t.Error("partial upload is listed")
 	}
-	if resp, _ := f.do(t, "GET", keyed("/video.bin")); resp.StatusCode != 404 {
+	if resp, _ := f.do(t, "GET", "/video.bin"); resp.StatusCode != 404 {
 		t.Errorf("partial upload downloadable: %d", resp.StatusCode)
 	}
-	if resp, _ := f.send(t, "PUT", upKeyed("/video.bin"), strings.NewReader("x")); resp.StatusCode != 409 {
+	if resp, _ := f.send(t, "PUT", "/video.bin", strings.NewReader("x")); resp.StatusCode != 409 {
 		t.Errorf("concurrent upload: %d", resp.StatusCode)
 	}
 
@@ -93,7 +93,7 @@ func TestPartialUploadIsHidden(t *testing.T) {
 }
 
 func TestAbortedUploadCleansUp(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	f.write(t, "doc.txt", "old version")
 	addr, _ := startServer(t, f)
 	conn := startUpload(t, f, addr, "doc.txt", bytes.Repeat([]byte("x"), 1<<20))
@@ -106,7 +106,7 @@ func TestAbortedUploadCleansUp(t *testing.T) {
 }
 
 func TestStalledUploadTimesOut(t *testing.T) {
-	f := newFixture(t, withUploads, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
+	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
 	addr, _ := startServer(t, f)
 	startUpload(t, f, addr, "stalled.bin", bytes.Repeat([]byte("x"), 1<<20))
 
@@ -122,7 +122,7 @@ func TestStalledUploadTimesOut(t *testing.T) {
 // Like downloads, uploads may take longer than read_timeout as long as the
 // client keeps sending.
 func TestSlowUploadOutlivesReadTimeout(t *testing.T) {
-	f := newFixture(t, withUploads, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
+	f := newFixture(t, func(c *config.Config) { c.Server.ReadTimeout = 300 * time.Millisecond })
 	addr, _ := startServer(t, f)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestSlowUploadOutlivesReadTimeout(t *testing.T) {
 
 	chunk := bytes.Repeat([]byte("y"), 64<<10)
 	const chunks = 10
-	fmt.Fprintf(conn, "PUT /slow.bin HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n", uploadKey, chunks*len(chunk))
+	fmt.Fprintf(conn, "PUT /slow.bin HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nContent-Length: %d\r\n\r\n", f.token, chunks*len(chunk))
 	for range chunks {
 		if _, err := conn.Write(chunk); err != nil {
 			t.Fatal(err)
@@ -152,14 +152,14 @@ func TestSlowUploadOutlivesReadTimeout(t *testing.T) {
 // A chunked body cut off between chunks is indistinguishable from a complete
 // one, so PUT needs a Content-Length.
 func TestChunkedPutRejected(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	addr, _ := startServer(t, f)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
-	fmt.Fprintf(conn, "PUT /c.bin HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", uploadKey, 500, strings.Repeat("z", 500))
+	fmt.Fprintf(conn, "PUT /c.bin HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n", f.token, 500, strings.Repeat("z", 500))
 
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
@@ -176,7 +176,7 @@ func TestChunkedPutRejected(t *testing.T) {
 
 // Form uploads may be chunked: the multipart boundaries reveal truncation.
 func TestFormUploadLimitAndTruncation(t *testing.T) {
-	f := newFixture(t, withUploads, func(c *config.Config) { c.Upload.MaxSize = 1000 })
+	f := newFixture(t, func(c *config.Config) { c.Upload.MaxSize = 1000 })
 	addr, _ := startServer(t, f)
 	post := func(parts ...formPart) (net.Conn, []byte, string) {
 		form, ctype := multipartForm(t, parts...)
@@ -186,12 +186,11 @@ func TestFormUploadLimitAndTruncation(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: t\r\nContent-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n", ctype)
+		fmt.Fprintf(conn, "POST / HTTP/1.1\r\nHost: t\r\nAuthorization: Bearer %s\r\nContent-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n", f.token, ctype)
 		return conn, data, ctype
 	}
-	key := formPart{field: "key", content: uploadKey}
 
-	conn, data, _ := post(key, formPart{field: "file", filename: "big.bin", content: strings.Repeat("z", 2000)})
+	conn, data, _ := post(formPart{field: "file", filename: "big.bin", content: strings.Repeat("z", 2000)})
 	fmt.Fprintf(conn, "%x\r\n%s\r\n0\r\n\r\n", len(data), data)
 	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
@@ -200,7 +199,7 @@ func TestFormUploadLimitAndTruncation(t *testing.T) {
 	expectStatus(t, resp, http.StatusRequestEntityTooLarge)
 
 	// Cut off at a chunk boundary inside the file part.
-	conn, data, _ = post(key, formPart{field: "file", filename: "cut.bin", content: strings.Repeat("c", 900)})
+	conn, data, _ = post(formPart{field: "file", filename: "cut.bin", content: strings.Repeat("c", 900)})
 	fmt.Fprintf(conn, "%x\r\n%s\r\n", len(data)/2, data[:len(data)/2])
 	waitFor(t, "partial upload on disk", func() bool { return exists(filepath.Join(f.dir, lockName("cut.bin"))) })
 	_ = conn.Close()
@@ -216,7 +215,7 @@ func TestFormUploadLimitAndTruncation(t *testing.T) {
 // fasthttp does not drain unread streamed bodies; the rest of a rejected
 // body must never be parsed as another request.
 func TestUnreadBodyClosesConnection(t *testing.T) {
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	addr, _ := startServer(t, f)
 	smuggled := "GET /smuggled HTTP/1.1\r\nHost: t\r\n\r\n"
 	// fasthttp buffers the first 8 KiB of a body before calling the handler.
@@ -228,7 +227,7 @@ func TestUnreadBodyClosesConnection(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fmt.Fprintf(conn, "%s /x.txt?key=wrong HTTP/1.1\r\nHost: t\r\nContent-Length: %d\r\n\r\n%s", method, len(body), body)
+		fmt.Fprintf(conn, "%s /x.txt HTTP/1.1\r\nHost: t\r\nContent-Length: %d\r\n\r\n%s", method, len(body), body)
 		br := bufio.NewReader(conn)
 		resp, err := http.ReadResponse(br, nil)
 		if err != nil {
@@ -256,7 +255,7 @@ func TestLockHeartbeatAndOwnership(t *testing.T) {
 	lockRefresh, lockExpiry = 50*time.Millisecond, 200*time.Millisecond
 	t.Cleanup(func() { lockRefresh, lockExpiry = refresh, expiry })
 
-	f := newFixture(t, withUploads)
+	f := newFixture(t)
 	addr, _ := startServer(t, f)
 	conn := startUpload(t, f, addr, "held.bin", bytes.Repeat([]byte("h"), 1<<20))
 	lock := filepath.Join(f.dir, lockName("held.bin"))
@@ -265,7 +264,7 @@ func TestLockHeartbeatAndOwnership(t *testing.T) {
 	if info, err := os.Stat(lock); err != nil || time.Since(info.ModTime()) > lockExpiry {
 		t.Fatalf("lock not refreshed: %v", err)
 	}
-	if resp, _ := f.send(t, "PUT", upKeyed("/held.bin"), strings.NewReader("x")); resp.StatusCode != 409 {
+	if resp, _ := f.send(t, "PUT", "/held.bin", strings.NewReader("x")); resp.StatusCode != 409 {
 		t.Errorf("live upload taken over: %d", resp.StatusCode)
 	}
 

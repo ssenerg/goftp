@@ -9,7 +9,7 @@ import (
 // entry is evicted.
 const maxTrackedClients = 100_000
 
-// failureLimiter caps wrong access keys per client within a fixed window.
+// failureLimiter caps failed password checks per client within a fixed window.
 // Checking and counting happen under one lock, so concurrent guesses cannot
 // slip past the budget.
 type failureLimiter struct {
@@ -70,5 +70,15 @@ func (l *failureLimiter) evict(now time.Time) {
 			break
 		}
 		delete(l.hits, k)
+	}
+}
+
+// refund takes back one counted failure, for an attempt that was counted
+// before it ran and then succeeded.
+func (l *failureLimiter) refund(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if f := l.hits[key]; f != nil && f.count > 0 {
+		f.count--
 	}
 }

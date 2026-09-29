@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v3/middleware/recover"
 	"go.uber.org/zap"
 
+	"goftp/internal/auth"
 	"goftp/internal/config"
 )
 
@@ -25,23 +25,23 @@ import (
 const readBufferSize = 16 << 10
 
 const contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-	"base-uri 'none'; frame-ancestors 'none'; form-action "
+	"base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+
+const allowedMethods = "GET, HEAD, PUT, POST"
 
 type Server struct {
-	cfg           *config.Config
-	log           *zap.Logger
-	app           *fiber.App
-	root          *os.Root
-	rootPath      string
-	limiter       *failureLimiter
-	keyHash       [sha256.Size]byte
-	uploadKeyHash [sha256.Size]byte
-	errEscape     error
-	allow         string
-	lockMu        sync.Mutex
+	cfg       *config.Config
+	log       *zap.Logger
+	auth      *auth.Service
+	app       *fiber.App
+	root      *os.Root
+	rootPath  string
+	limiter   *failureLimiter
+	errEscape error
+	lockMu    sync.Mutex
 }
 
-func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
+func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
 	rootPath, err := filepath.EvalSymlinks(cfg.Dir)
 	if err != nil {
 		return nil, err
@@ -53,16 +53,10 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	s := &Server{
 		cfg:       cfg,
 		log:       log,
+		auth:      authSvc,
 		root:      root,
 		rootPath:  rootPath,
-		keyHash:   sha256.Sum256([]byte(cfg.SecureKey)),
 		errEscape: escapeError(root),
-		allow:     "GET, HEAD",
-	}
-	uploads := cfg.Upload.Enabled
-	if uploads {
-		s.uploadKeyHash = sha256.Sum256([]byte(cfg.Upload.Key))
-		s.allow = "GET, HEAD, PUT, POST"
 	}
 
 	s.app = fiber.New(fiber.Config{
@@ -72,9 +66,8 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 		IdleTimeout:       cfg.Server.IdleTimeout,
 		ReadBufferSize:    readBufferSize,
 		ReduceMemoryUsage: true,
-		GETOnly:           !uploads,
 		// Uploads are streamed to disk instead of buffered in memory.
-		StreamRequestBody:            uploads,
+		StreamRequestBody:            true,
 		DisablePreParseMultipartForm: true,
 		CaseSensitive:                true,
 		StrictRouting:                true,
@@ -88,10 +81,6 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	if cfg.TLS.CertFile != "" {
 		hsts = 365 * 24 * 60 * 60
 	}
-	formAction := "'none'"
-	if uploads {
-		formAction = "'self'"
-	}
 	panics := recover.Config{EnableStackTrace: true, StackTraceHandler: s.logPanic}
 	// The outer recover guards the logger; the inner one turns handler
 	// panics into logged 500s.
@@ -100,20 +89,24 @@ func New(cfg *config.Config, log *zap.Logger) (*Server, error) {
 	s.app.Use(recover.New(panics))
 	s.app.Use(helmet.New(helmet.Config{
 		XFrameOptions:         "DENY",
-		ContentSecurityPolicy: contentSecurityPolicy + formAction,
+		ContentSecurityPolicy: contentSecurityPolicy,
 		HSTSMaxAge:            hsts,
 		HSTSExcludeSubdomains: true,
 	}))
 	if cfg.Limiter.MaxFailures > 0 {
 		s.limiter = newFailureLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
+	s.app.Use(s.checkOrigin, s.identify, s.requirePasswordChange)
+	s.app.Get(loginPath, s.loginPage)
+	s.app.Post(loginPath, s.login)
+	s.app.Post(logoutPath, s.logout)
+	s.app.Get(passwordPath, s.passwordPage)
+	s.app.Post(passwordPath, s.changePassword)
 	s.app.Get("/*", s.handle)
-	if uploads {
-		s.app.Put("/*", s.put)
-		s.app.Post("/*", s.postForm)
-		srv := s.app.Server()
-		srv.Handler = closeUnreadBody(srv.Handler)
-	}
+	s.app.Put("/*", s.put)
+	s.app.Post("/*", s.postForm)
+	srv := s.app.Server()
+	srv.Handler = s.wrapHandler(srv.Handler)
 	return s, nil
 }
 

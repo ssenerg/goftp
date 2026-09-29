@@ -1,0 +1,63 @@
+{{define "listing"}}{{template "head" .}}
+<body>
+<div class="container">
+  <header>
+    <div>
+      <h1><span class="logo">goftp</span></h1>
+      <div class="breadcrumb">{{.Path}}</div>
+    </div>
+    {{template "userbar" .}}
+  </header>
+
+  {{with .Upload}}
+  <form class="upload" method="post" enctype="multipart/form-data" action="{{.Action}}">
+    {{if .Replace}}<label><input type="checkbox" name="replace" value="1"> Replace existing</label>{{end}}
+    <input type="file" name="file" multiple required>
+    <button type="submit" class="primary">Upload</button>
+  </form>
+  {{end}}
+
+  {{with .Parent}}
+  <div class="parent-link">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+    <a href="{{.}}">Parent directory</a>
+  </div>
+  {{end}}
+
+  <div class="table-wrap">
+  {{if .Items}}
+    <table>
+      <thead><tr>
+        <th>Name</th>
+        <th style="width:100px; text-align:right">Size</th>
+        <th class="date-col" style="width:160px; text-align:right">Modified</th>
+      </tr></thead>
+      <tbody>
+      {{range .Items}}
+        <tr>
+          <td>
+            <div class="name-cell">
+              {{if .IsDir}}
+              <svg class="icon icon-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+              {{else}}
+              <svg class="icon icon-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              {{end}}
+              <a href="{{.Href}}">{{.Name}}</a>
+            </div>
+          </td>
+          <td class="size">{{.Size}}</td>
+          <td class="date date-col">{{.ModTime}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  {{else}}
+    <div class="empty">This directory is empty.</div>
+  {{end}}
+  </div>
+
+  <footer>goftp &middot; resumable file server</footer>
+</div>
+</body>
+</html>
+{{end}}

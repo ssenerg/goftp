@@ -17,6 +17,7 @@ type ctxKey int
 const (
 	logStateKey ctxKey = iota
 	bodyDoneKey
+	sessionKey
 )
 
 type logState struct {
@@ -25,7 +26,7 @@ type logState struct {
 }
 
 // logRequests writes one access log line per request. The query string is
-// never logged because it carries the access key.
+// not logged.
 func (s *Server) logRequests(c fiber.Ctx) error {
 	st := &logState{start: time.Now()}
 	c.Locals(logStateKey, st)
@@ -116,7 +117,7 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 		s.log.Error("request failed", zap.String("path", c.Path()), zap.Error(err))
 	}
 	if code == fiber.StatusMethodNotAllowed {
-		c.Set(fiber.HeaderAllow, s.allow)
+		c.Set(fiber.HeaderAllow, allowedMethods)
 	}
 	c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
 	c.Set(fiber.HeaderContentType, fiber.MIMETextPlainCharsetUTF8)
@@ -126,6 +127,7 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 	// request-level failures; log those here.
 	switch st, _ := c.Locals(logStateKey).(*logState); {
 	case st == nil:
+		c.Locals(logStateKey, &logState{})
 		s.writeAccess(newAccess(c, time.Now()), bodySize(c), nil)
 	case st.deferred:
 		s.writeAccess(newAccess(c, st.start), bodySize(c), nil)

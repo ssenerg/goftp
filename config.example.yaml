@@ -1,13 +1,16 @@
 # Every key can also be set via environment (GOFTP_ prefix, "." -> "_",
-# e.g. GOFTP_LOG_LEVEL=debug). Flags (--dir, --addr, --query) win over both.
+# e.g. GOFTP_LOG_LEVEL=debug). Flags (--dir, --addr) win over both.
 
 dir: /srv/files          # directory to serve
 addr: ":8080"            # listen address (IPv4 and IPv6)
-query: key               # query parameter carrying the access key
 
-# Prefer the SECURE_KEY / GOFTP_SECURE_KEY environment variable. If set here,
-# keep this file private (chmod 600). Minimum 16 characters.
-# secure_key: ""
+database:
+  # Prefer GOFTP_DATABASE_URL, or keep the password out of the URL with
+  # PGPASSWORD. If set here, keep this file private (chmod 600).
+  url: postgres://goftp@localhost:5432/goftp
+
+auth:
+  session_ttl: 12h       # how long a sign-in lasts
 
 log:
   level: info            # debug, info, warn, error
@@ -20,6 +23,7 @@ server:
   shutdown_timeout: 10s  # grace period for in-flight requests on shutdown
   # Behind a reverse proxy, name a header the proxy overwrites (not appends)
   # and list the proxy addresses, e.g. nginx: proxy_set_header X-Real-IP $remote_addr;
+  # The proxy should also set X-Forwarded-Proto, so HTTPS is recognized.
   proxy_header: ""
   trusted_proxies: []    # e.g. ["127.0.0.1", "10.0.0.0/8"]
 
@@ -27,12 +31,9 @@ tls:                     # serve HTTPS directly (enables HSTS)
   cert_file: ""
   key_file: ""
 
-limiter:                 # per-client budget of wrong access keys
+limiter:                 # per-client budget of failed password checks
   max_failures: 20       # 0 disables
   window: 1m
 
-upload:                  # PUT and form uploads; off by default
-  enabled: false
-  # Separate from the download key; prefer GOFTP_UPLOAD_KEY. Minimum 16 characters.
-  # key: ""
+upload:
   max_size: 0            # per file, e.g. 10GiB; 0 = unlimited
