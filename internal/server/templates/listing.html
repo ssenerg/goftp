@@ -109,7 +109,7 @@
         {{end}}
         {{range .Items}}
         <tr data-name="{{.Key}}"{{if .Selected}} class="selected"{{else if .New}} class="new"{{end}}>
-          <td class="name"><a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
+          <td class="name"><a href="{{.Href}}{{if .Preview}}?view{{end}}">{{if .Thumb}}<span class="thumb-box"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><img class="thumb" src="{{.Href}}?thumb" alt="" loading="lazy" decoding="async"></span>{{else}}<svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg>{{end}}<span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
           {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}

@@ -198,6 +198,67 @@ func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
 	return err
 }
 
+const uploadColumns = "id, user_id, dir, name, length, replace, temp, created_at, expires_at"
+
+func scanUpload(row pgx.Row) (*Upload, error) {
+	var up Upload
+	err := row.Scan(&up.ID, &up.UserID, &up.Dir, &up.Name, &up.Length, &up.Replace, &up.Temp, &up.CreatedAt, &up.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &up, err
+}
+
+func (s *PgStore) CreateUpload(ctx context.Context, tokenHash []byte, up *Upload, keep time.Duration) error {
+	return s.db.QueryRow(ctx, `INSERT INTO uploads (token_hash, user_id, dir, name, length, replace, temp, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, now() + $8::interval) RETURNING id, created_at, expires_at`,
+		tokenHash, up.UserID, up.Dir, up.Name, up.Length, up.Replace, up.Temp, keep).Scan(&up.ID, &up.CreatedAt, &up.ExpiresAt)
+}
+
+func (s *PgStore) UploadByToken(ctx context.Context, tokenHash []byte) (*Upload, error) {
+	return scanUpload(s.db.QueryRow(ctx, "SELECT "+uploadColumns+" FROM uploads WHERE token_hash = $1 AND expires_at > now()", tokenHash))
+}
+
+func (s *PgStore) ClaimUpload(ctx context.Context, id int64, writer string, lease time.Duration) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE uploads SET writer = $2, writer_until = now() + $3::interval
+		WHERE id = $1 AND expires_at > now() AND (writer = '' OR writer_until <= now())`, id, writer, lease)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) ExtendUpload(ctx context.Context, id int64, writer string, lease, keep time.Duration) (bool, error) {
+	tag, err := s.db.Exec(ctx, `UPDATE uploads SET writer_until = now() + $3::interval, expires_at = now() + $4::interval
+		WHERE id = $1 AND writer = $2`, id, writer, lease, keep)
+	return err == nil && tag.RowsAffected() == 1, err
+}
+
+func (s *PgStore) ReleaseUpload(ctx context.Context, id int64, writer string, keep time.Duration) error {
+	_, err := s.db.Exec(ctx, `UPDATE uploads SET writer = '', writer_until = '-infinity', expires_at = now() + $3::interval
+		WHERE id = $1 AND writer = $2`, id, writer, keep)
+	return err
+}
+
+func (s *PgStore) DeleteUpload(ctx context.Context, id int64) error {
+	_, err := s.db.Exec(ctx, "DELETE FROM uploads WHERE id = $1", id)
+	return err
+}
+
+func (s *PgStore) TakeExpiredUploads(ctx context.Context, limit int) ([]Upload, error) {
+	rows, err := s.db.Query(ctx, `DELETE FROM uploads WHERE id IN (
+			SELECT id FROM uploads WHERE expires_at <= now() AND writer_until <= now()
+			ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)
+		RETURNING `+uploadColumns, limit)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Upload, error) {
+		up, err := scanUpload(row)
+		if err != nil {
+			return Upload{}, err
+		}
+		return *up, nil
+	})
+}
+
 // policyChannel is notified on every policy change so that running servers
 // reload their enforcer.
 const policyChannel = "goftp_policy"

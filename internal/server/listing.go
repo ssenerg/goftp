@@ -148,7 +148,9 @@ type listItem struct {
 	ModTime string
 	ModISO  string
 	IsDir   bool
-	New     bool // just created or renamed
+	Preview string // how ?view shows it: image, video, audio or pdf; "" if not
+	Thumb   bool   // a thumbnail of it may be shown
+	New     bool   // just created or renamed
 	// CanDelete, CanRename and CanShare tell the visitor's rights on the
 	// entry.
 	CanDelete, CanRename, CanShare bool
@@ -448,6 +450,8 @@ func (s *Server) listItem(dirPath, realDir string, e fs.DirEntry) (listItem, boo
 		item.Kind = kindOf(name)
 		item.size = info.Size()
 		item.Size = formatSize(item.size)
+		item.Preview = previewKind(name)
+		item.Thumb = thumbExts[strings.ToLower(path.Ext(name))]
 	default:
 		return listItem{}, false
 	}

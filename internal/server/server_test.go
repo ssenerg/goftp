@@ -81,9 +81,10 @@ func newFixtureWith(t *testing.T, ta *testAuth, mutate ...func(*config.Config)) 
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &config.Config{
-		Dir:  dir,
-		Addr: "127.0.0.1:0",
-		Auth: config.AuthConfig{SessionTTL: time.Hour},
+		Dir:    dir,
+		Addr:   "127.0.0.1:0",
+		Auth:   config.AuthConfig{SessionTTL: time.Hour},
+		Upload: config.UploadConfig{ResumeWindow: time.Hour},
 		Server: config.ServerConfig{
 			ReadTimeout:     5 * time.Second,
 			WriteTimeout:    5 * time.Second,

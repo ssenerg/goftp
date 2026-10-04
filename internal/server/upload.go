@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
@@ -115,7 +116,8 @@ func (s *Server) put(c fiber.Ctx) error {
 // postForm stores the files of a multipart/form-data upload (the listing
 // page's form) in the directory at the request path. The replace field has
 // to come before the files. Existing files are only replaced when asked to.
-// Other forms create, delete and rename entries there (see manage).
+// Other forms create, delete and rename entries there (see manage), and
+// tus requests start resumable uploads (see createUpload).
 func (s *Server) postForm(c fiber.Ctx) error {
 	urlPath, _, err := cleanPath(c.Path())
 	if err != nil {
@@ -123,6 +125,9 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	}
 	if hidden(urlPath) {
 		return fiber.ErrForbidden
+	}
+	if c.Get("Tus-Resumable") != "" {
+		return s.createUpload(c, urlPath)
 	}
 	switch mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType)); mediaType {
 	case fiber.MIMEApplicationForm, fiber.MIMEApplicationJSON:
@@ -266,22 +271,9 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 		release()
 	}()
 
-	created = true
-	switch info, err := dir.Lstat(name); {
-	case err == nil && info.IsDir():
-		return false, 0, fiber.ErrConflict
-	case err == nil && !replace:
-		return false, 0, errExists
-	case err == nil && !rights.replace:
-		return false, 0, fiber.ErrForbidden
-	case err == nil:
-		created = false
-	case !errors.Is(err, fs.ErrNotExist):
+	if created, err = checkTarget(dir, name, replace, rights); err != nil {
 		return false, 0, err
-	case !rights.create:
-		return false, 0, fiber.ErrForbidden
 	}
-
 	f, err := dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return false, 0, err
@@ -293,21 +285,52 @@ func (s *Server) receive(dir *os.Root, name string, body io.Reader, replace bool
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
-	if err == nil && !rights.create {
-		// Replacing is all the visitor may do, so the file has to still
-		// be there.
-		if _, lerr := dir.Lstat(name); lerr != nil {
-			err = fiber.ErrForbidden
-		}
-	}
 	if err == nil {
-		err = commit(dir, tmp, name, replace && rights.replace)
+		err = place(dir, tmp, name, replace, rights)
 	}
 	if err != nil {
 		return false, size, err
 	}
-	syncDir(dir)
 	return created, size, nil
+}
+
+// checkTarget reports whether storing name in dir would create it, or why
+// it may not be stored: name is a folder (409), or it exists and replacing
+// was not asked for (errExists) or is not allowed (403), or it does not
+// exist and may not be created (403).
+func checkTarget(dir *os.Root, name string, replace bool, rights uploadRights) (created bool, err error) {
+	switch info, err := dir.Lstat(name); {
+	case err == nil && info.IsDir():
+		return false, fiber.ErrConflict
+	case err == nil && !replace:
+		return false, errExists
+	case err == nil && !rights.replace:
+		return false, fiber.ErrForbidden
+	case err == nil:
+		return false, nil
+	case !errors.Is(err, fs.ErrNotExist):
+		return false, err
+	case !rights.create:
+		return false, fiber.ErrForbidden
+	}
+	return true, nil
+}
+
+// place moves the complete temp file tmp in dir to name, which the caller
+// has locked and checked with checkTarget.
+func place(dir *os.Root, tmp, name string, replace bool, rights uploadRights) error {
+	if !rights.create {
+		// Replacing is all the visitor may do, so the file has to still
+		// be there.
+		if _, err := dir.Lstat(name); err != nil {
+			return fiber.ErrForbidden
+		}
+	}
+	if err := commit(dir, tmp, name, replace && rights.replace); err != nil {
+		return err
+	}
+	syncDir(dir)
+	return nil
 }
 
 // commit moves a finished temp file into place. Without replace, a hard
@@ -382,19 +405,26 @@ func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool
 		zap.Bool("replaced", !created))
 }
 
-// uploadError maps a failed upload to a response status; other errors
-// are server-side faults (500, logged).
+// uploadError maps a failed upload to a response status, also when body,
+// the request body read, is nil; other errors are server-side faults (500,
+// logged).
 func (s *Server) uploadError(body *requestBody, err error) error {
 	var (
 		fe      *fiber.Error
 		timeout interface{ Timeout() bool }
+		berr    error
 	)
+	if body != nil {
+		berr = body.err
+	}
 	switch {
 	case errors.As(err, &fe):
 		return err
-	case errors.As(body.err, &timeout) && timeout.Timeout():
+	case errors.Is(berr, errAborted):
+		return fiber.ErrLocked
+	case errors.As(berr, &timeout) && timeout.Timeout():
 		return fiber.ErrRequestTimeout
-	case body.err != nil:
+	case berr != nil:
 		return fiber.ErrBadRequest
 	case errors.Is(err, syscall.ENOSPC):
 		return fiber.ErrInsufficientStorage
@@ -417,7 +447,10 @@ type requestBody struct {
 	read     int64
 	eof      bool
 	err      error
+	aborted  atomic.Bool
 }
+
+var errAborted = errors.New("reading the request was stopped")
 
 func (s *Server) requestBody(c fiber.Ctx) *requestBody {
 	r := c.Request().BodyStream()
@@ -440,6 +473,11 @@ func (b *requestBody) Read(p []byte) (int, error) {
 		}
 		_ = b.conn.SetReadDeadline(deadline)
 	}
+	// Checked after the deadline is re-armed, which could undo an abort.
+	if b.aborted.Load() {
+		b.err = errAborted
+		return 0, errAborted
+	}
 	n, err := b.r.Read(p)
 	b.read += int64(n)
 	// fasthttp reports a connection closed mid-body as a clean EOF.
@@ -447,12 +485,24 @@ func (b *requestBody) Read(p []byte) (int, error) {
 		err = io.ErrUnexpectedEOF
 	}
 	switch {
+	case err != nil && b.aborted.Load():
+		err = errAborted
+		b.err = err
 	case err == io.EOF:
 		b.eof = true
 	case err != nil:
 		b.err = err
 	}
 	return n, err
+}
+
+// abort makes reading the body fail from now on, also a read that waits
+// for data.
+func (b *requestBody) abort() {
+	b.aborted.Store(true)
+	if b.conn != nil {
+		_ = b.conn.SetReadDeadline(time.Now())
+	}
 }
 
 // finishBody drains a small remainder of the body (such as a multipart

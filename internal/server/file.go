@@ -21,10 +21,22 @@ import (
 // site's origin.
 const fileSecurityPolicy = "default-src 'none'; sandbox"
 
-// serveFile streams f (taking ownership of it) with Range and conditional
-// request support.
+// serveFile streams f (taking ownership of it) as an attachment, with Range
+// and conditional request support.
 func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name string) error {
-	c.Set(fiber.HeaderContentSecurityPolicy, fileSecurityPolicy)
+	return s.sendContent(c, f, info, name, "", "")
+}
+
+// sendContent streams f (taking ownership of it) as serveFile does, or,
+// given the policy to show it with, as ctype to be shown in the browser. An
+// empty ctype is sniffed.
+func (s *Server) sendContent(c fiber.Ctx, f *os.File, info fs.FileInfo, name, ctype, inlinePolicy string) error {
+	disposition, policy := "attachment", fileSecurityPolicy
+	if inlinePolicy != "" {
+		disposition, policy = "inline", inlinePolicy
+		c.Set(fiber.HeaderXFrameOptions, "SAMEORIGIN")
+	}
+	c.Set(fiber.HeaderContentSecurityPolicy, policy)
 	size := info.Size()
 	modTime := info.ModTime()
 	etag := `"` + strconv.FormatInt(modTime.UnixNano(), 16) + "-" + strconv.FormatInt(size, 16) + `"`
@@ -49,8 +61,10 @@ func (s *Server) serveFile(c fiber.Ctx, f *os.File, info fs.FileInfo, name strin
 		}
 	}
 
-	ctype := sniffType(f)
-	c.Set(fiber.HeaderContentDisposition, mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	if ctype == "" {
+		ctype = sniffType(f)
+	}
+	c.Set(fiber.HeaderContentDisposition, mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	body := s.newBodyStream(c, f)
 
 	switch len(ranges) {

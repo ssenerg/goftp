@@ -62,6 +62,32 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Limiter.MaxFailures != 20 || cfg.Limiter.Window != time.Minute {
 		t.Errorf("unexpected limiter config: %+v", cfg.Limiter)
 	}
+	if cfg.Cache.Dir != "" || cfg.Cache.MaxSize != 512<<20 {
+		t.Errorf("unexpected cache config: %+v", cfg.Cache)
+	}
+
+	t.Setenv("GOFTP_CACHE_DIR", "/var/cache/goftp")
+	t.Setenv("GOFTP_CACHE_MAX_SIZE", "1GiB")
+	if cfg, err := load(); err != nil || cfg.Cache.Dir != "/var/cache/goftp" || cfg.Cache.MaxSize != 1<<30 {
+		t.Errorf("cache from the environment: %+v, %v", cfg.Cache, err)
+	}
+	// Within the served folder, only where nothing is served.
+	dir := t.TempDir()
+	for cache, ok := range map[string]bool{
+		filepath.Join(dir, ".cache"): true, filepath.Join(dir, "a/.b/c"): true, dir + "-cache": true, filepath.Join(dir, "..cache"): true,
+		filepath.Join(dir, "a/b"): false,
+	} {
+		t.Setenv("GOFTP_CACHE_DIR", cache)
+		if _, err := load("--dir", dir); (err == nil) != ok {
+			t.Errorf("cache.dir %s: %v", cache, err)
+		}
+	}
+	// No cache, no matter where.
+	t.Setenv("GOFTP_CACHE_DIR", filepath.Join(dir, "a/b"))
+	t.Setenv("GOFTP_CACHE_MAX_SIZE", "0")
+	if _, err := load("--dir", dir); err != nil {
+		t.Errorf("disabled cache in dir: %v", err)
+	}
 }
 
 func TestLoadPrecedence(t *testing.T) {
@@ -123,6 +149,10 @@ func TestLoadErrors(t *testing.T) {
 	if err := os.WriteFile(legacy, []byte("secure_key: 0123456789abcdef\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	negativeCache := filepath.Join(dir, "cache.yaml")
+	if err := os.WriteFile(negativeCache, []byte("cache:\n  max_size: -1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	unitless := filepath.Join(dir, "unitless.yaml")
 	if err := os.WriteFile(unitless, []byte("server:\n  write_timeout: 60\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -153,6 +183,10 @@ func TestLoadErrors(t *testing.T) {
 		{"missing file", nil, []string{"--config", filepath.Join(dir, "nope.yaml")}, "read config"},
 		{"bad max size", map[string]string{"GOFTP_UPLOAD_MAX_SIZE": "10XB"}, nil, "invalid size"},
 		{"negative max size", map[string]string{"GOFTP_UPLOAD_MAX_SIZE": "-1"}, nil, "invalid size"},
+		{"bad cache size", map[string]string{"GOFTP_CACHE_MAX_SIZE": "1XB"}, nil, "invalid size"},
+		{"negative cache size", nil, []string{"--config", negativeCache}, "cache.max_size must not be negative"},
+		{"cache served", map[string]string{"GOFTP_CACHE_DIR": filepath.Join(dir, "thumbs")}, []string{"--dir", dir}, "cache.dir must be outside dir"},
+		{"cache is the dir", map[string]string{"GOFTP_CACHE_DIR": dir}, []string{"--dir", dir}, "cache.dir must be outside dir"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

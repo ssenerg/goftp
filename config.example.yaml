@@ -42,3 +42,8 @@ limiter:                 # per-client budget of failed password checks
 
 upload:
   max_size: 0            # per file, e.g. 10GiB; 0 = unlimited
+  resume_window: 24h     # how long an interrupted upload can be resumed
+
+cache:                   # thumbnails of images
+  dir: ""                # default: goftp in the user's cache directory; not in dir
+  max_size: 512MiB       # 0 disables the cache
