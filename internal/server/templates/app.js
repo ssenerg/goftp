@@ -17,9 +17,9 @@
 
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  if (params.has("uploaded") || params.has("created")) {
-    params.delete("uploaded");
-    params.delete("created");
+  const shown = ["uploaded", "created", "renamed", "deleted"].filter(p => params.has(p));
+  if (shown.length) {
+    for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
   }
 
@@ -107,6 +107,112 @@
       }[status] || `The folder could not be created (error ${status}).`;
       error.hidden = false;
       name.select();
+    });
+  }
+
+  // Rename and delete: a popover for each entry, made from a template.
+  const itemForms = $("#item-actions");
+  if (itemForms) {
+    const failed = {
+      rename: {
+        0: "The connection was lost. Try again.",
+        400: "Names cannot be empty or very long, start with a dot, or contain /, \\ or control characters.",
+        401: "You were signed out. Sign in and try again.",
+        403: "You may not rename this.",
+        404: "It is no longer here. Reload the page.",
+        409: "Something with this name already exists here, or one of them is being uploaded.",
+      },
+      delete: {
+        0: "The connection was lost. Try again.",
+        401: "You were signed out. Sign in and try again.",
+        403: "You may not delete this, or something in it.",
+        404: "It is no longer here. Reload the page.",
+        409: "It, or something in it, is being uploaded right now, or another disk is mounted in it.",
+      },
+    };
+    let open = null;
+    const close = focus => {
+      if (!open) return;
+      open.pop.remove();
+      open.link.setAttribute("aria-expanded", "false");
+      if (focus) open.link.focus();
+      open = null;
+    };
+    const show = link => {
+      const name = link.dataset.item;
+      const isDir = link.dataset.dir === "true";
+      const pop = document.createElement("div");
+      pop.className = "popover item-pop";
+      pop.setAttribute("role", "dialog");
+      pop.setAttribute("aria-label", link.getAttribute("aria-label"));
+      pop.append(itemForms.content.cloneNode(true));
+      for (const form of $$("form", pop)) {
+        const kind = form.dataset.kind;
+        const error = $(".popover-error", form);
+        const submit = $("button[type=submit]", form);
+        form.hidden = kind === "rename" && link.dataset.rename !== "true";
+        form.elements[kind].value = name;
+        form.addEventListener("submit", async e => {
+          e.preventDefault();
+          const to = kind === "rename" ? form.elements.to.value.trim() : "";
+          if (kind === "rename" && to === name) {
+            close(true);
+            return;
+          }
+          let status = 400;
+          if (kind === "delete" || to !== "") {
+            const body = new URLSearchParams(new FormData(form));
+            if (kind === "rename") body.set("to", to);
+            submit.disabled = true;
+            try {
+              status = (await fetch(form.action, { method: "POST", body })).status;
+            } catch {
+              status = 0;
+            }
+            submit.disabled = false;
+          }
+          if (status === 201 || status === 204) {
+            location.assign(form.action + (kind === "rename" ? "?renamed=" + encodeURIComponent(to) : "?deleted=1"));
+            return;
+          }
+          error.textContent = failed[kind][status] || `It could not be ${kind}d (error ${status}).`;
+          error.hidden = false;
+          if (kind === "rename") form.elements.to.select();
+        });
+      }
+      $(".delete-note", pop).textContent = isDir
+        ? `Delete the folder “${name}” and everything in it? This cannot be undone.`
+        : `Delete “${name}”? This cannot be undone.`;
+      link.after(pop);
+      // Upwards when it would end below the window and fits above.
+      const box = pop.getBoundingClientRect();
+      if (box.bottom > innerHeight && box.height < link.getBoundingClientRect().top) pop.classList.add("up");
+      link.setAttribute("aria-expanded", "true");
+      open = { pop, link };
+      const to = $("input[name=to]", pop);
+      if (link.dataset.rename === "true") {
+        to.value = name;
+        to.focus();
+        // The name without its extension, ready to be typed over.
+        const dot = isDir ? -1 : name.lastIndexOf(".");
+        to.setSelectionRange(0, dot > 0 ? dot : name.length);
+      } else {
+        $("form[data-kind=delete] button", pop).focus();
+      }
+    };
+    document.addEventListener("click", e => {
+      const link = e.target.closest && e.target.closest("a[data-item]");
+      if (link) {
+        e.preventDefault();
+        const again = open && open.link === link;
+        close(false);
+        if (!again) show(link);
+      } else if (open && !open.pop.contains(e.target)) {
+        close(false);
+      }
+    });
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && open) close(true);
     });
   }
 

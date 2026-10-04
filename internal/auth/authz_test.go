@@ -15,10 +15,10 @@ func TestDefaultPolicy(t *testing.T) {
 		role string
 		acts map[string]bool
 	}{
-		{"user", map[string]bool{auth.ActRead: true, auth.ActWrite: false, auth.ActOverwrite: false}},
-		{"operator", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: false}},
-		{"admin", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: true}},
-		{"superadmin", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: true, "anything": true}},
+		{"user", map[string]bool{auth.ActRead: true, auth.ActWrite: false, auth.ActOverwrite: false, auth.ActDelete: false}},
+		{"operator", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: false, auth.ActDelete: false}},
+		{"admin", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: true, auth.ActDelete: true}},
+		{"superadmin", map[string]bool{auth.ActRead: true, auth.ActWrite: true, auth.ActOverwrite: true, auth.ActDelete: true, "anything": true}},
 		{auth.Anonymous, map[string]bool{auth.ActRead: false}},
 	} {
 		if _, err := e.AddRoleForUser(auth.Subject("u-"+tc.role), tc.role); err != nil {

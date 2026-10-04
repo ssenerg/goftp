@@ -51,12 +51,12 @@ New and reset passwords are temporary: after signing in, users can do
 nothing but choose their own password (at least 12 characters), which ends
 all their other sessions.
 
-| Role         | May                                                          |
-|--------------|--------------------------------------------------------------|
-| `user`       | list directories and download (`read`)                       |
-| `operator`   | also upload new files and create folders (`write`)           |
-| `admin`      | also replace existing files (`overwrite`)                    |
-| `superadmin` | every action (`*`)                                           |
+| Role         | May                                                           |
+|--------------|---------------------------------------------------------------|
+| `user`       | list directories and download (`read`)                        |
+| `operator`   | also upload new files and create folders (`write`)            |
+| `admin`      | also replace, delete and rename files (`overwrite`, `delete`) |
+| `superadmin` | every action (`*`)                                            |
 
 These are Casbin rules on URL paths, kept in the `casbin_rule` table and
 editable while the server runs (servers reload them within a moment):
@@ -131,6 +131,24 @@ A running upload refreshes its lock every 15 seconds; a lock left behind by
 a goftp that stopped (crash, restart) is taken over by the next upload of
 that name once it is a minute old, and removed with its temp file when
 goftp starts again.
+
+## Deleting and renaming
+
+Everyone who may delete an entry finds Rename and Delete in its ⋯ menu.
+Deleting a folder deletes everything in it. That is refused while
+something in it is being uploaded, when the visitor may not delete all of
+it, and when another disk is mounted inside. Renaming never replaces an
+existing entry. Scripts:
+
+```sh
+curl -X DELETE -H "Authorization: Bearer $TOKEN" https://host/dir/old.iso
+curl -d rename=draft.txt -d to=final.txt -H "Authorization: Bearer $TOKEN" https://host/dir/
+```
+
+Deleting needs the `delete` action; renaming needs `read` and `delete` on
+the entry and `write` for the new name. Admins have `delete`; on upgrade,
+it is added only if the admin rule is still the default one. To let others
+delete, e.g. `goftp policy add operator '/*' delete`.
 
 ## Security notes
 

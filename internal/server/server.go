@@ -31,7 +31,7 @@ const readBufferSize = 16 << 10
 var contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src " + scriptHash +
 	"; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 
-const allowedMethods = "GET, HEAD, PUT, POST"
+const allowedMethods = "GET, HEAD, PUT, POST, DELETE"
 
 type Server struct {
 	cfg       *config.Config
@@ -116,6 +116,7 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Get("/*", s.handle)
 	s.app.Put("/*", s.put)
 	s.app.Post("/*", s.postForm)
+	s.app.Delete("/*", s.deleteEntry)
 	srv := s.app.Server()
 	srv.Handler = s.wrapHandler(srv.Handler)
 	return s, nil

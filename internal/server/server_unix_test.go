@@ -276,3 +276,66 @@ func TestLockedFolderHidesContents(t *testing.T) {
 		t.Errorf("written into the locked folder: %v", entries)
 	}
 }
+
+// Deleting or renaming a symlink affects the link, not what it leads to.
+// Through a symlinked folder, the rules of the real folder apply.
+func TestDeleteAndRenameSymlinks(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "keep/k.txt", "keep")
+	f.write(t, "box/x.txt", "x")
+	f.write(t, "protected/p.txt", "protected")
+	f.write(t, "incoming/i.txt", "i")
+	for name, target := range map[string]string{
+		"box/link.txt":  "../keep/k.txt",
+		"box/dirlink":   "../keep",
+		"box/inner":     "../keep",
+		"box/renamable": "../keep/k.txt",
+		"incoming/esc":  "../protected",
+	} {
+		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	admin := f.as("admin")
+	for _, p := range []string{"/box/link.txt", "/box/dirlink"} {
+		if resp, _ := admin.do(t, "DELETE", p); resp.StatusCode != http.StatusNoContent {
+			t.Errorf("DELETE %s: %d", p, resp.StatusCode)
+		}
+	}
+	resp, _ := admin.send(t, "POST", "/box/", strings.NewReader("rename=renamable&to=renamed"), "Content-Type", formType)
+	expectStatus(t, resp, http.StatusCreated)
+	if target, err := os.Readlink(filepath.Join(f.dir, "box", "renamed")); err != nil || target != "../keep/k.txt" {
+		t.Errorf("renamed link: %q %v", target, err)
+	}
+	// A folder goes with the links in it, but not with what they lead to.
+	if resp, _ := admin.do(t, "DELETE", "/box/"); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("DELETE /box/: %d", resp.StatusCode)
+	}
+	if readFile(t, f.dir, "keep/k.txt") != "keep" {
+		t.Error("deleted through a link")
+	}
+
+	for _, rule := range []string{auth.ActRead, auth.ActWrite, auth.ActDelete} {
+		if _, err := ta.svc.AddPolicy(auth.Anonymous, "/incoming/*", rule); err != nil {
+			t.Fatal(err)
+		}
+	}
+	anon := f.as("")
+	if resp, _ := anon.do(t, "DELETE", "/incoming/esc/p.txt"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("DELETE through link: %d", resp.StatusCode)
+	}
+	if resp, _ := anon.send(t, "POST", "/incoming/esc/", strings.NewReader("rename=p.txt&to=q.txt"), "Content-Type", formType); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("rename through link: %d", resp.StatusCode)
+	}
+	if readFile(t, f.dir, "protected/p.txt") != "protected" {
+		t.Error("changed through a link")
+	}
+	// The link itself lives in /incoming/, so it may go.
+	if resp, _ := anon.do(t, "DELETE", "/incoming/esc"); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("DELETE the link: %d", resp.StatusCode)
+	}
+	if !exists(filepath.Join(f.dir, "protected", "p.txt")) {
+		t.Error("deleting the link deleted its target")
+	}
+}

@@ -115,7 +115,7 @@ func (s *Server) put(c fiber.Ctx) error {
 // postForm stores the files of a multipart/form-data upload (the listing
 // page's form) in the directory at the request path. The replace field has
 // to come before the files. Existing files are only replaced when asked to.
-// Other forms create a folder there.
+// Other forms create, delete and rename entries there (see manage).
 func (s *Server) postForm(c fiber.Ctx) error {
 	urlPath, _, err := cleanPath(c.Path())
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *Server) postForm(c fiber.Ctx) error {
 	}
 	switch mediaType, _, _ := mime.ParseMediaType(c.Get(fiber.HeaderContentType)); mediaType {
 	case fiber.MIMEApplicationForm, fiber.MIMEApplicationJSON:
-		return s.mkdir(c, urlPath)
+		return s.manage(c, urlPath)
 	}
 	// Each file is checked on its own; this spares reading the body of
 	// visitors who may not upload here at all.
@@ -374,13 +374,9 @@ func bidiControl(r rune) bool {
 }
 
 func (s *Server) logUpload(c fiber.Ctx, urlPath string, size int64, created bool) {
-	user := auth.Anonymous
-	if u := userOf(c); u != nil {
-		user = u.Username
-	}
 	s.log.Info("upload",
 		zap.String("ip", c.IP()),
-		zap.String("user", user),
+		zap.String("user", visitor(c)),
 		zap.String("path", urlPath),
 		zap.Int64("bytes", size),
 		zap.Bool("replaced", !created))

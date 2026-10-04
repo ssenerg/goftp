@@ -9,8 +9,9 @@ import (
 // Actions checked against the policy.
 const (
 	ActRead      = "read"      // list directories, download files
-	ActWrite     = "write"     // upload new files
+	ActWrite     = "write"     // upload new files, create folders
 	ActOverwrite = "overwrite" // replace existing files
+	ActDelete    = "delete"    // delete and rename files and folders
 )
 
 // Anonymous is the subject for requests without a session.
@@ -44,6 +45,7 @@ var DefaultPolicies = [][]string{
 	{"p", "user", "/*", ActRead},
 	{"p", "operator", "/*", ActWrite},
 	{"p", "admin", "/*", ActOverwrite},
+	{"p", "admin", "/*", ActDelete},
 	{"p", "superadmin", "/*", "*"},
 	{"g", "operator", "user"},
 	{"g", "admin", "operator"},

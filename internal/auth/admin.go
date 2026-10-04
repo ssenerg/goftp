@@ -12,7 +12,7 @@ import (
 var (
 	ErrInvalidSubject = fmt.Errorf("subject must be a role (%s), %q or \"user:<name>\"", strings.Join(Roles, ", "), Anonymous)
 	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "/*", e.g. "/docs/*"`)
-	ErrInvalidAction  = fmt.Errorf("action must be %s, %s, %s or *", ActRead, ActWrite, ActOverwrite)
+	ErrInvalidAction  = fmt.Errorf("action must be %s, %s, %s, %s or *", ActRead, ActWrite, ActOverwrite, ActDelete)
 )
 
 // UserInfo is a user with their roles.
@@ -160,7 +160,7 @@ func checkRule(sub, obj, act string) error {
 	} else if sub != Anonymous && !slices.Contains(Roles, sub) {
 		return ErrInvalidSubject
 	}
-	if !slices.Contains([]string{ActRead, ActWrite, ActOverwrite, "*"}, act) {
+	if !slices.Contains([]string{ActRead, ActWrite, ActOverwrite, ActDelete, "*"}, act) {
 		return ErrInvalidAction
 	}
 	// keyMatch compares the text before "*" as a plain prefix, so "/pub*"
