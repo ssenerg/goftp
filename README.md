@@ -171,3 +171,8 @@ go test -race ./...
 # Postgres-backed tests run when a database is given:
 GOFTP_TEST_DATABASE_URL="postgres://postgres:secret@localhost/goftp_test" go test ./...
 ```
+
+[CI](.github/workflows/ci.yml) runs these with Postgres on every pull request,
+along with gofmt, `go vet`, builds for Windows, macOS and FreeBSD,
+[govulncheck](https://go.dev/doc/security/vuln/) (also weekly) and a build
+of the Docker image.
