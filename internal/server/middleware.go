@@ -47,12 +47,19 @@ func (s *Server) logRequests(c fiber.Ctx) error {
 
 	// Downloads are logged once the body has been sent (or aborted).
 	a := newAccess(c, st.start)
-	if body, ok := c.Response().BodyStream().(*bodyStream); ok {
-		body.onClose = func(sent int64, err error) { s.writeAccess(a, sent, err) }
+	if body, ok := c.Response().BodyStream().(finishing); ok {
+		body.whenDone(func(sent int64, err error) { s.writeAccess(a, sent, err) })
 		return nil
 	}
 	s.writeAccess(a, bodySize(c), nil)
 	return nil
+}
+
+// finishing is a streamed response body that says when it is done, so its
+// request can be logged with what was sent. Other streamed bodies would be
+// read into memory for the log.
+type finishing interface {
+	whenDone(func(sent int64, err error))
 }
 
 // access holds copies of the request data: Fiber reuses its buffers once

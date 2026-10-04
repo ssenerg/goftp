@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -337,5 +338,37 @@ func TestDeleteAndRenameSymlinks(t *testing.T) {
 	}
 	if !exists(filepath.Join(f.dir, "protected", "p.txt")) {
 		t.Error("deleting the link deleted its target")
+	}
+}
+
+// Zips follow symlinks the way listings do, and stop at loops.
+func TestZipSymlinks(t *testing.T) {
+	ta := newTestAuth(t)
+	f := newFixtureWith(t, ta)
+	f.write(t, "pub/a.txt", "a")
+	f.write(t, "private/p.txt", "secret")
+	for name, target := range map[string]string{
+		"pub/loop":       "..",
+		"pub/self":       ".",
+		"pub/alias.txt":  "a.txt",
+		"pub/secret.txt": "../private/p.txt",
+		"pub/privdir":    "../private",
+	} {
+		if err := os.Symlink(target, filepath.Join(f.dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ta.svc.AddPolicy(auth.Anonymous, "/pub/*", auth.ActRead); err != nil {
+		t.Fatal(err)
+	}
+	for who, want := range map[string][]string{
+		"":      {"a.txt", "alias.txt"},
+		"admin": {"a.txt", "alias.txt", "privdir/", "privdir/p.txt", "secret.txt"},
+	} {
+		_, body := f.as(who).do(t, "GET", "/pub/?zip")
+		names, contents := zipEntries(t, body)
+		if !slices.Equal(names, want) || contents["alias.txt"] != "a" {
+			t.Errorf("%q gets %q", who, names)
+		}
 	}
 }

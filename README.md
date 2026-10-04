@@ -132,6 +132,13 @@ a goftp that stopped (crash, restart) is taken over by the next upload of
 that name once it is a minute old, and removed with its temp file when
 goftp starts again.
 
+## Downloading folders
+
+"Download zip" on a folder's page downloads everything in it that you may
+read, as one zip (`curl -OJ -H "Authorization: Bearer $TOKEN"
+"https://host/dir/?zip"`). The zip is streamed as it is made, and files are
+stored without compression: most large files do not compress anyway.
+
 ## Deleting and renaming
 
 Everyone who may delete an entry finds Rename and Delete in its ⋯ menu.

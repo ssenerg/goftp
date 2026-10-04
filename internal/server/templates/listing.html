@@ -35,6 +35,9 @@
         <kbd aria-hidden="true">/</kbd>
       </label>
       {{end}}
+      {{if .Items}}
+      <a class="btn" href="?zip" download><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</a>
+      {{end}}
       {{if .Mkdir}}
       <details class="newfolder">
         <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-folder-plus"/></svg>New folder</summary>

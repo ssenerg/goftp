@@ -161,6 +161,9 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(urlPath + "/"))
 	}
+	if c.Request().URI().QueryArgs().Has("zip") {
+		return s.serveZip(c, urlPath, realPath, zipName(urlPath), s.rulesOf(userOf(c)))
+	}
 
 	entries, err := dir.ReadDir(-1)
 	if err != nil {
