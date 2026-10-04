@@ -8,7 +8,10 @@ Postgres whose access is decided by [Casbin](https://casbin.org) policies.
 - Users sign in with a password; roles decide what they may do.
 - Range (single and multipart), `If-Range`, `If-None-Match` and
   `If-Modified-Since` are supported, so downloads can be resumed.
-- Uploads never expose partial files (see [Uploads](#uploads)).
+- Uploads never expose partial files (see [Uploads](#uploads)), and resume
+  after a lost connection.
+- Images, video, audio and PDFs can be viewed in the browser, and listings
+  show thumbnails of images (see [Previews](#previews)).
 - Dotfiles are never listed or served. Paths are resolved with `os.Root`, so
   requests and symlinks cannot escape the served directory.
 
@@ -179,6 +182,30 @@ read, as one zip (`curl -OJ -H "Authorization: Bearer $TOKEN"
 "https://host/dir/?zip"`). The zip is streamed as it is made, and files are
 stored without compression: most large files do not compress anyway.
 
+## Previews
+
+Clicking an image, a video, an audio file or a PDF opens it in a viewer,
+with Download next to it and the previous and next ones of its folder a
+click or an arrow key away (Escape goes back to the folder). Listings show
+thumbnails of JPEG, PNG, GIF, WebP and BMP images, and a link to a single
+file shows it on the link's page. The same works with a query: `?view` (the
+viewer), `?inline` (the file, to be shown in a browser) and `?thumb` (a
+thumbnail of at most 256×256 pixels).
+
+Files are shown only if their content, whatever their name, is an image,
+audio, video or PDF: never SVG, HTML or anything else that can hold a
+script. PDFs, which can hold scripts and forms, are shown sandboxed like
+downloads (see [Security notes](#security-notes)), and only goftp's own
+pages may frame what is shown. Everything else is always downloaded.
+
+Thumbnails are made of images up to 100 MB that take at most 256 MB of
+memory to decode, at most two at a time; other images keep their icon.
+They are kept in `cache.dir` (default: `goftp` in the user's cache
+directory, such as `~/.cache/goftp`; in Docker, the `cache` volume), which
+is trimmed back to three quarters of `cache.max_size` (512 MiB; `0` keeps
+none) by removing the least recently used. It may not be a folder that
+goftp serves.
+
 ## Deleting and renaming
 
 Everyone who may delete an entry finds Rename and Delete in its ⋯ menu.
@@ -238,6 +265,12 @@ one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
   goftp logs a warning when it sees proxy headers it does not trust.
 - Cross-site form posts and uploads are refused (`Sec-Fetch-Site`/`Origin`
   checks, `SameSite=Lax` cookies).
+- Files are sent as attachments, with a `Content-Security-Policy` that runs
+  no scripts and gives them an origin of their own, should a browser show
+  one anyway. Previews are sent with the type the file's content proves,
+  never one guessed from its name (`X-Content-Type-Options: nosniff`), and
+  PDFs keep that policy. Other sites may not embed files
+  (`Cross-Origin-Resource-Policy`).
 - Concurrent connections are capped to fit the open file limit. When
   clients connect directly rather than through a proxy, also cap what one
   client may hold with `server.max_conns_per_ip` (`GOFTP_MAX_CONNS_PER_IP`).

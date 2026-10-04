@@ -62,6 +62,8 @@ type shareFile struct {
 	Name, Kind, Size string
 	ModTime, ModISO  string
 	Href             string
+	Preview          string // how it is shown: image, video, audio or pdf; "" if not
+	Src              string // where it is shown from
 }
 
 type sharePage struct {
@@ -101,13 +103,20 @@ func (s *Server) shared(c fiber.Ctx) error {
 		name := path.Base(sh.Path)
 		switch rel {
 		case "/" + name:
-			return s.serveFile(c, f, info, name)
+			if c.Request().URI().QueryArgs().Has("view") {
+				// The link's page shows it.
+				_ = f.Close()
+				return s.redirect(c, view.Root)
+			}
+			return s.serveFileAs(c, f, info, sh.Path, realPath, fileAt{base: view.base, rel: rel, allow: allow})
 		case "/":
+			_, preview := inlineType(f, name)
 			_ = f.Close()
+			href := escapePath(view.base + "/" + name)
 			return s.render(c, fiber.StatusOK, "share", sharePage{page: s.sharePage(c, view, name), File: &shareFile{
 				Name: name, Kind: kindOf(name), Size: formatSize(info.Size()),
 				ModTime: info.ModTime().UTC().Format("Jan 2, 2006 15:04") + " UTC", ModISO: info.ModTime().UTC().Format(time.RFC3339),
-				Href: escapePath(view.base + "/" + name),
+				Href: href, Preview: preview, Src: href + "?inline",
 			}})
 		}
 		_ = f.Close()
@@ -122,8 +131,10 @@ func (s *Server) shared(c fiber.Ctx) error {
 		}
 	}
 	if !info.IsDir() {
-		// serveFile closes the file once it is sent.
-		return s.serveFile(c, f, info, path.Base(urlPath))
+		// The file is closed once it is sent.
+		return s.serveFileAs(c, f, info, urlPath, realPath, fileAt{
+			base: view.base, rel: rel, page: func(title string) page { return s.sharePage(c, view, title) }, allow: allow,
+		})
 	}
 	defer f.Close()
 	if !wantDir && rel != "/" {

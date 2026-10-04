@@ -42,6 +42,7 @@ services:
     volumes:
       - ${GOFTP_DATA:-files}:/data
       - ${GOFTP_TLS_DIR:-tls}:/tls:ro
+      - cache:/cache   # thumbnails
     # Longer than server.shutdown_timeout, so uploads can finish.
     stop_grace_period: 15s
     read_only: true
@@ -53,3 +54,4 @@ volumes:
   pgdata:
   files:
   tls:
+  cache:

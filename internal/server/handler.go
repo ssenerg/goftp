@@ -39,7 +39,8 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if !ok {
 		return s.deny(c)
 	}
-	f, info, realPath, err := s.lookup(urlPath, s.rulesOf(userOf(c)))
+	allow := s.rulesOf(userOf(c))
+	f, info, realPath, err := s.lookup(urlPath, allow)
 	if err != nil {
 		return err
 	}
@@ -47,7 +48,9 @@ func (s *Server) handle(c fiber.Ctx) error {
 		defer f.Close()
 		return s.serveDir(c, f, urlPath, realPath, wantDir)
 	}
-	return s.serveFile(c, f, info, path.Base(urlPath))
+	return s.serveFileAs(c, f, info, urlPath, realPath, fileAt{
+		rel: urlPath, page: func(title string) page { return s.page(c, title) }, allow: allow,
+	})
 }
 
 // lookup opens the folder or regular file at urlPath, if allow lets the

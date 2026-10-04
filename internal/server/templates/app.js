@@ -44,6 +44,24 @@
     }
   }
 
+  // Thumbnails that cannot be made leave the file's icon.
+  for (const img of $$("img.thumb")) {
+    if (img.complete && !img.naturalWidth) img.remove();
+    else img.addEventListener("error", () => img.remove());
+  }
+
+  // The viewer: arrows go to the previous and next file, Escape back to the
+  // folder.
+  const stage = $("#stage");
+  if (stage) {
+    document.addEventListener("keydown", e => {
+      if (e.ctrlKey || e.metaKey || e.altKey || (e.target.closest && e.target.closest("input, textarea, select, video, audio"))) return;
+      const to = { ArrowLeft: $("#prev"), ArrowRight: $("#next") }[e.key];
+      if (to) location.assign(to.href);
+      else if (e.key === "Escape") location.assign(stage.dataset.folder);
+    });
+  }
+
   // Filtering the listing; "/" jumps to the filter, Escape clears it.
   const filter = $("#filter");
   if (filter) {

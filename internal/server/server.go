@@ -27,10 +27,10 @@ import (
 // non-ASCII paths are long. Idle connections release it (ReduceMemoryUsage).
 const readBufferSize = 16 << 10
 
-// contentSecurityPolicy lets pages run their own script and upload to this
-// site, and nothing else.
-var contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src " + scriptHash +
-	"; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+// contentSecurityPolicy lets pages run their own script, upload to this
+// site and show its images, media and PDFs, and nothing else.
+var contentSecurityPolicy = "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:; media-src 'self'; frame-src 'self'; script-src " +
+	scriptHash + "; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
 
 const allowedMethods = "GET, HEAD, PUT, POST, DELETE"
 
@@ -49,6 +49,9 @@ type Server struct {
 	proxyNoted atomic.Bool
 
 	shareGuesses *rateLimiter // password checks per share link
+	thumbs       *thumbCache
+	thumbing     chan struct{} // thumbnails being made
+	thumbWait    time.Duration // for a turn to make one
 }
 
 func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
@@ -111,6 +114,8 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	}
 	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
 	s.shareGuesses = newRateLimiter(shareGuessesPerMinute, time.Minute)
+	s.thumbs = newThumbCache(cfg.Cache.Dir, int64(cfg.Cache.MaxSize), log)
+	s.thumbing, s.thumbWait = make(chan struct{}, thumbConcurrency()), 30*time.Second
 	s.app.Use(s.noteProxyHeaders, s.checkOrigin, s.identify, s.requirePasswordChange)
 	s.app.Get(loginPath, s.loginPage)
 	s.app.Post(loginPath, s.login)

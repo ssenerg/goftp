@@ -1,0 +1,40 @@
+{{define "viewer"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <nav class="crumbs" aria-label="Folder path">
+    <a href="{{.Home}}"><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span hidden>Home</span></a>
+    {{- range .Crumbs}}
+    <span class="sep" aria-hidden="true">/</span><a href="{{.Href}}">{{.Name}}</a>
+    {{- end}}
+  </nav>
+  <div class="head">
+    <div>
+      <h1>{{.Name}}</h1>
+      <p class="summary">{{.Size}} · modified <time datetime="{{.ModISO}}">{{.ModTime}}</time>{{with .Position}} · {{.}}{{end}}</p>
+    </div>
+    <div class="tools">
+      {{if or .Prev .Next}}
+      <span class="pager">
+        {{with .Prev}}<a class="btn" id="prev" href="{{.Href}}" rel="prev" title="{{.Name}}" aria-label="Previous: {{.Name}}"><svg class="i" aria-hidden="true"><use href="#i-left"/></svg></a>{{else}}<span class="btn" aria-hidden="true"><svg class="i"><use href="#i-left"/></svg></span>{{end}}
+        {{with .Next}}<a class="btn" id="next" href="{{.Href}}" rel="next" title="{{.Name}}" aria-label="Next: {{.Name}}"><svg class="i" aria-hidden="true"><use href="#i-right"/></svg></a>{{else}}<span class="btn" aria-hidden="true"><svg class="i"><use href="#i-right"/></svg></span>{{end}}
+      </span>
+      {{end}}
+      <a class="btn primary" href="{{.Download}}" download><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Download</a>
+    </div>
+  </div>
+  <div class="card stage{{if eq .Kind "pdf"}} stage-pdf{{end}}" id="stage" data-folder="{{.Folder}}">
+    {{if eq .Kind "image"}}<img src="{{.Src}}" alt="{{.Name}}">
+    {{else if eq .Kind "video"}}<video src="{{.Src}}" controls preload="metadata"></video>
+    {{else if eq .Kind "audio"}}<audio src="{{.Src}}" controls preload="metadata"></audio>
+    {{else if eq .Kind "pdf"}}<iframe src="{{.Src}}" title="{{.Name}}"></iframe>
+    {{else}}<div class="empty"><svg class="i" aria-hidden="true"><use href="#i-file"/></svg><p>This file cannot be shown in the browser.</p><p>Download it to open it.</p></div>{{end}}
+  </div>
+  {{if eq .Kind "pdf"}}<p class="stage-note">Not showing? <a href="{{.Src}}" target="_blank" rel="noopener">Open the PDF on its own</a>.</p>{{end}}
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

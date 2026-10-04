@@ -361,6 +361,19 @@
   .link-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .link-cell a { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
   .link-cell .where { color: var(--faint); font-size: 12.5px; padding-left: 30px; overflow-wrap: anywhere; }
+  .thumb-box { position: relative; display: inline-grid; place-items: center; flex: none; width: 22px; height: 22px; }
+  .thumb { position: absolute; top: 50%; left: 50%; width: 30px; height: 30px; transform: translate(-50%, -50%); object-fit: cover; border-radius: 6px; background: var(--surface); }
+  .stage { display: grid; place-items: center; min-height: 240px; padding: 12px; background: var(--surface-2); overflow: hidden; }
+  .stage img, .stage video { display: block; max-width: 100%; max-height: calc(100vh - 250px); border-radius: var(--radius-sm); }
+  .stage audio { width: min(560px, 100%); }
+  .stage-pdf { padding: 0; }
+  .stage iframe { display: block; width: 100%; height: calc(100vh - 230px); min-height: 360px; border: 0; }
+  .stage-note { margin-top: 10px; color: var(--muted); font-size: 13px; }
+  .pager { display: inline-flex; gap: 6px; }
+  .pager .btn { width: 40px; padding: 0; }
+  .pager span.btn { opacity: 0.4; }
+  .share-preview { display: block; max-width: 100%; max-height: 60vh; margin-bottom: 8px; border-radius: var(--radius-sm); background: var(--surface-2); }
+  .share-pdf { width: 100%; height: 60vh; border: 0; }
   .link-cell .chip { display: inline-flex; align-items: center; gap: 4px; }
   .link-cell .chip .i { width: 13px; height: 13px; }
   .cell-label { display: none; }
@@ -630,6 +643,8 @@
   <symbol id="i-audio" viewBox="0 0 24 24"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m15.5 17 5-5-5-5m-7 0-5 5 5 5"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m14.5 6-6 6 6 6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9.5 6 6 6-6 6"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11m0-11-11 11"/></symbol>
   <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4l-1.1 1.1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.1-1.1"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>

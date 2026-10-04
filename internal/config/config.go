@@ -26,6 +26,7 @@ type Config struct {
 	TLS      TLSConfig      `mapstructure:"tls"`
 	Limiter  LimiterConfig  `mapstructure:"limiter"`
 	Upload   UploadConfig   `mapstructure:"upload"`
+	Cache    CacheConfig    `mapstructure:"cache"`
 }
 
 type DatabaseConfig struct {
@@ -66,6 +67,14 @@ type UploadConfig struct {
 	// ResumeWindow is how long an interrupted resumable upload keeps the
 	// data it received, counted from the last that arrived.
 	ResumeWindow time.Duration `mapstructure:"resume_window"`
+}
+
+// CacheConfig places the cache of image thumbnails.
+type CacheConfig struct {
+	// Dir defaults to goftp in the user's cache directory.
+	Dir string `mapstructure:"dir"`
+	// MaxSize bounds the cache; 0 disables it.
+	MaxSize ByteSize `mapstructure:"max_size"`
 }
 
 // ByteSize is a size in bytes; config values may use units such as "10GiB".
@@ -177,6 +186,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("limiter.window", time.Minute)
 	v.SetDefault("upload.max_size", 0)
 	v.SetDefault("upload.resume_window", 24*time.Hour)
+	v.SetDefault("cache.dir", "")
+	v.SetDefault("cache.max_size", 512<<20)
 }
 
 func (c *Config) normalize() error {
@@ -245,5 +256,31 @@ func (c *Config) normalize() error {
 	if c.Upload.ResumeWindow < time.Minute {
 		errs = append(errs, errors.New("upload.resume_window must be at least 1m"))
 	}
+	if c.Cache.MaxSize < 0 {
+		errs = append(errs, errors.New("cache.max_size must not be negative"))
+	}
+	if c.Cache.Dir != "" && c.Cache.MaxSize > 0 {
+		if abs, err := filepath.Abs(c.Cache.Dir); err != nil {
+			errs = append(errs, fmt.Errorf("cache.dir: %w", err))
+		} else if c.Cache.Dir = abs; servedFrom(c.Dir, abs) {
+			// Anyone who may read there would get thumbnails of every image.
+			errs = append(errs, errors.New("cache.dir must be outside dir, or in a folder of it whose name starts with a dot"))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// servedFrom reports whether the path p is in dir and would be served from
+// it: no part of it relative to dir starts with a dot (as ".." does).
+func servedFrom(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return false
+	}
+	for part := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+		if part != "." && strings.HasPrefix(part, ".") {
+			return false
+		}
+	}
+	return true
 }

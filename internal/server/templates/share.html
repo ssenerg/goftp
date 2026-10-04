@@ -1,7 +1,7 @@
 {{define "share"}}{{template "head" .}}
 <body>
 {{template "topbar" .}}
-<main class="container narrow">
+<main class="container{{if not (and .File .File.Preview)}} narrow{{end}}">
   {{if .Locked}}
   <div class="card share-card">
     <span class="share-icon" aria-hidden="true"><svg class="i"><use href="#i-lock"/></svg></span>
@@ -18,7 +18,11 @@
   </div>
   {{else}}{{with .File}}
   <div class="card share-card">
-    <span class="share-icon" aria-hidden="true"><svg class="i kind k-{{.Kind}}"><use href="#i-{{.Kind}}"/></svg></span>
+    {{if eq .Preview "image"}}<img class="share-preview" src="{{.Src}}" alt="{{.Name}}">
+    {{else if eq .Preview "video"}}<video class="share-preview" src="{{.Src}}" controls preload="metadata"></video>
+    {{else if eq .Preview "audio"}}<audio src="{{.Src}}" controls preload="metadata"></audio>
+    {{else if eq .Preview "pdf"}}<iframe class="share-preview share-pdf" src="{{.Src}}" title="{{.Name}}"></iframe>
+    {{else}}<span class="share-icon" aria-hidden="true"><svg class="i kind k-{{.Kind}}"><use href="#i-{{.Kind}}"/></svg></span>{{end}}
     <h1>{{.Name}}</h1>
     <p class="muted">{{.Size}} · modified <time datetime="{{.ModISO}}">{{.ModTime}}</time></p>
     <a class="btn primary" href="{{.Href}}" download><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Download</a>
