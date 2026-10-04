@@ -63,6 +63,9 @@ type LimiterConfig struct {
 
 type UploadConfig struct {
 	MaxSize ByteSize `mapstructure:"max_size"`
+	// ResumeWindow is how long an interrupted resumable upload keeps the
+	// data it received, counted from the last that arrived.
+	ResumeWindow time.Duration `mapstructure:"resume_window"`
 }
 
 // ByteSize is a size in bytes; config values may use units such as "10GiB".
@@ -173,6 +176,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("limiter.max_failures", 20)
 	v.SetDefault("limiter.window", time.Minute)
 	v.SetDefault("upload.max_size", 0)
+	v.SetDefault("upload.resume_window", 24*time.Hour)
 }
 
 func (c *Config) normalize() error {
@@ -237,6 +241,9 @@ func (c *Config) normalize() error {
 	}
 	if c.Upload.MaxSize < 0 {
 		errs = append(errs, errors.New("upload.max_size must not be negative"))
+	}
+	if c.Upload.ResumeWindow < time.Minute {
+		errs = append(errs, errors.New("upload.resume_window must be at least 1m"))
 	}
 	return errors.Join(errs...)
 }

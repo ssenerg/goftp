@@ -18,6 +18,13 @@ type Store struct {
 	users    map[int64]*auth.User
 	sessions map[string]session
 	shares   map[string]*auth.Share // by token hash
+	uploads  map[string]*upload     // by token hash
+}
+
+type upload struct {
+	auth.Upload
+	writer      string
+	writerUntil time.Time
 }
 
 type session struct {
@@ -28,7 +35,8 @@ type session struct {
 var _ auth.Store = (*Store)(nil)
 
 func NewStore() *Store {
-	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share)}
+	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share),
+		uploads: make(map[string]*upload)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -237,4 +245,110 @@ func (s *Store) DeleteExpiredShares(context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) CreateUpload(_ context.Context, tokenHash []byte, up *auth.Upload, keep time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	now := time.Now()
+	up.ID, up.CreatedAt, up.ExpiresAt = s.nextID, now, now.Add(keep)
+	s.uploads[string(tokenHash)] = &upload{Upload: *up}
+	return nil
+}
+
+func (s *Store) UploadByToken(_ context.Context, tokenHash []byte) (*auth.Upload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up, ok := s.uploads[string(tokenHash)]
+	if !ok || !time.Now().Before(up.ExpiresAt) {
+		return nil, auth.ErrNotFound
+	}
+	c := up.Upload
+	return &c, nil
+}
+
+func (s *Store) uploadByID(id int64) *upload {
+	for _, up := range s.uploads {
+		if up.ID == id {
+			return up
+		}
+	}
+	return nil
+}
+
+func (s *Store) ClaimUpload(_ context.Context, id int64, writer string, lease time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	up := s.uploadByID(id)
+	if up == nil || !now.Before(up.ExpiresAt) || (up.writer != "" && now.Before(up.writerUntil)) {
+		return false, nil
+	}
+	up.writer, up.writerUntil = writer, now.Add(lease)
+	return true, nil
+}
+
+func (s *Store) ExtendUpload(_ context.Context, id int64, writer string, lease, keep time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	up := s.uploadByID(id)
+	if up == nil || up.writer != writer {
+		return false, nil
+	}
+	now := time.Now()
+	up.writerUntil, up.ExpiresAt = now.Add(lease), now.Add(keep)
+	return true, nil
+}
+
+func (s *Store) ReleaseUpload(_ context.Context, id int64, writer string, keep time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if up := s.uploadByID(id); up != nil && up.writer == writer {
+		up.writer, up.writerUntil, up.ExpiresAt = "", time.Time{}, time.Now().Add(keep)
+	}
+	return nil
+}
+
+func (s *Store) DeleteUpload(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, up := range s.uploads {
+		if up.ID == id {
+			delete(s.uploads, k)
+		}
+	}
+	return nil
+}
+
+func (s *Store) TakeExpiredUploads(_ context.Context, limit int) ([]auth.Upload, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var out []auth.Upload
+	for k, up := range s.uploads {
+		if len(out) < limit && !now.Before(up.ExpiresAt) && !now.Before(up.writerUntil) {
+			out = append(out, up.Upload)
+			delete(s.uploads, k)
+		}
+	}
+	return out, nil
+}
+
+// ExpireUpload makes the upload id expire now, for tests.
+func (s *Store) ExpireUpload(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if up := s.uploadByID(id); up != nil {
+		up.ExpiresAt = time.Now()
+	}
+}
+
+// SetUploadWriter makes writer hold the claim on upload id, for tests.
+func (s *Store) SetUploadWriter(id int64, writer string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if up := s.uploadByID(id); up != nil {
+		up.writer, up.writerUntil = writer, time.Now().Add(time.Hour)
+	}
 }

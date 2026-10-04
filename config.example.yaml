@@ -42,3 +42,4 @@ limiter:                 # per-client budget of failed password checks
 
 upload:
   max_size: 0            # per file, e.g. 10GiB; 0 = unlimited
+  resume_window: 24h     # how long an interrupted upload can be resumed

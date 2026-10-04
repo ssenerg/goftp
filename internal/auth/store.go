@@ -33,8 +33,23 @@ type Share struct {
 	ExpiresAt    time.Time
 }
 
-// Store persists users, sessions and share links. Sessions and links are
-// keyed by the SHA-256 hash of their token.
+// Upload is an unfinished resumable upload: Length bytes for the file Name
+// in the folder Dir, of which the hidden file Temp next to it holds what
+// arrived so far.
+type Upload struct {
+	ID        int64
+	UserID    int64  // the uploader, 0 for anonymous visitors
+	Dir       string // URL path of the folder
+	Name      string
+	Length    int64
+	Replace   bool // may replace a file of that name
+	Temp      string
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+// Store persists users, sessions, share links and unfinished uploads.
+// Sessions, links and uploads are keyed by the SHA-256 hash of their token.
 type Store interface {
 	CreateUser(ctx context.Context, username, passwordHash string) (int64, error)
 	UserByName(ctx context.Context, username string) (*User, error)
@@ -67,4 +82,23 @@ type Store interface {
 	// if userID is 0.
 	DeleteShare(ctx context.Context, id, userID int64) error
 	DeleteExpiredShares(ctx context.Context) error
+
+	// CreateUpload stores up, which expires after keep, and sets its ID,
+	// CreatedAt and ExpiresAt.
+	CreateUpload(ctx context.Context, tokenHash []byte, up *Upload, keep time.Duration) error
+	// UploadByToken returns an unexpired upload.
+	UploadByToken(ctx context.Context, tokenHash []byte) (*Upload, error)
+	// ClaimUpload makes writer the one writer of the unexpired upload id
+	// for lease, unless another writer's claim still holds (false).
+	ClaimUpload(ctx context.Context, id int64, writer string, lease time.Duration) (bool, error)
+	// ExtendUpload renews writer's claim for lease and keeps the upload
+	// for keep from now; false if writer no longer holds the claim.
+	ExtendUpload(ctx context.Context, id int64, writer string, lease, keep time.Duration) (bool, error)
+	// ReleaseUpload ends writer's claim and keeps the upload for keep from
+	// now.
+	ReleaseUpload(ctx context.Context, id int64, writer string, keep time.Duration) error
+	DeleteUpload(ctx context.Context, id int64) error
+	// TakeExpiredUploads deletes up to limit expired uploads that no
+	// writer claims, and returns them.
+	TakeExpiredUploads(ctx context.Context, limit int) ([]Upload, error)
 }

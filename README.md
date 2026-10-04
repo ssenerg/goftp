@@ -121,6 +121,9 @@ token. `POST /.auth/logout` ends the session. Sessions last
 - Browser: users who may upload into a folder can drop files anywhere on its
   page, or choose them, and watch each upload's progress. Existing files
   are only replaced when "Replace files that already exist" is ticked.
+  Uploads are resumable: after a lost connection they go on by themselves
+  from what arrived, and after a reload or a closed tab once the same file
+  is chosen again.
 - curl: `curl -T file.iso -H "Authorization: Bearer $TOKEN" https://host/dir/`.
   PUT replaces existing files unless `-H "If-None-Match: *"` is given, and
   needs a Content-Length.
@@ -141,6 +144,33 @@ A running upload refreshes its lock every 15 seconds; a lock left behind by
 a goftp that stopped (crash, restart) is taken over by the next upload of
 that name once it is a minute old, and removed with its temp file when
 goftp starts again.
+
+### Resumable uploads
+
+goftp speaks [tus 1.0](https://tus.io/protocols/resumable-upload) (with
+the creation, termination and expiration extensions), so tus clients such
+as [tus-js-client](https://github.com/tus/tus-js-client) or
+[tuspy](https://github.com/tus/tus-py-client) can upload to a folder
+(`https://host/dir/` as the endpoint, the file's name as `filename` in its
+metadata, and `replace` set to `1` to replace an existing file). With curl:
+
+```sh
+auth="Authorization: Bearer $TOKEN"
+# Start: the answer's Location is where the data goes.
+curl -i -X POST -H "$auth" -H "Tus-Resumable: 1.0.0" -H "Upload-Length: $(wc -c < big.iso)" \
+  -H "Upload-Metadata: filename $(printf big.iso | base64 | tr -d '\n')" https://host/dir/
+# Send the data; after an interruption, ask what arrived and go on from there.
+off=$(curl -sI -H "$auth" -H "Tus-Resumable: 1.0.0" https://host/.uploads/ID | tr -d '\r' | awk -F': ' 'tolower($1) == "upload-offset" { print $2 }')
+curl -X PATCH -H "$auth" -H "Tus-Resumable: 1.0.0" -H "Upload-Offset: $off" \
+  -H "Content-Type: application/offset+octet-stream" -C "$off" -T big.iso https://host/.uploads/ID
+```
+
+What arrives is kept even when the connection drops, in a hidden
+`.goftp-*.upload` file next to the file it becomes, which is checked like
+any other upload when it starts and stored like one once complete. Only
+whoever started an upload can continue it. An upload nothing arrives for
+is removed after `upload.resume_window` (24 hours by default); `DELETE`
+on its URL cancels it at once.
 
 ## Downloading folders
 

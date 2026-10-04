@@ -162,14 +162,13 @@ func (s *Server) holdLock(dir *os.Root, lock, tmp string) func() {
 // only removed when the same name is uploaded again. As for a takeover, a
 // lock counts as abandoned once it has not been refreshed for lockExpiry;
 // temp files named in live locks belong to running uploads, of this server
-// or another one sharing the directory. Other tools' locks and
+// or another one sharing the directory. Resumable uploads whose data has
+// not grown for longer than they are kept are gone too: purgeUploads
+// misses those whose folder was moved. Other tools' locks and
 // dot-directories are left alone. It returns how many files it removed.
 func (s *Server) removeLeftovers(ctx context.Context) int {
 	removed := 0
-	stale := func(e fs.DirEntry) bool {
-		info, err := e.Info()
-		return err == nil && time.Since(info.ModTime()) >= lockExpiry
-	}
+	stale := func(e fs.DirEntry) bool { return olderThan(e, lockExpiry) }
 	var walk func(dir string)
 	walk = func(dir string) {
 		if ctx.Err() != nil {
@@ -202,7 +201,8 @@ func (s *Server) removeLeftovers(ctx context.Context) int {
 			switch name := e.Name(); {
 			case e.IsDir() && !hidden(name):
 				walk(path.Join(dir, name))
-			case validTemp(name) && e.Type().IsRegular() && !inUse[name] && stale(e):
+			case validTemp(name) && e.Type().IsRegular() && !inUse[name] && stale(e),
+				validPartial(name) && e.Type().IsRegular() && olderThan(e, s.cfg.Upload.ResumeWindow+time.Hour):
 				if s.root.Remove(path.Join(dir, name)) == nil {
 					removed++
 				}
@@ -225,4 +225,10 @@ func (s *Server) removeStaleLock(name, tmp string) bool {
 		return false
 	}
 	return s.root.Remove(name) == nil
+}
+
+// olderThan reports whether e was last modified at least d ago.
+func olderThan(e fs.DirEntry, d time.Duration) bool {
+	info, err := e.Info()
+	return err == nil && time.Since(info.ModTime()) >= d
 }

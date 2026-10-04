@@ -128,6 +128,9 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Post(sharesPath, s.sharesAction)
 	s.app.Get(sharePrefix+"*", s.shared)
 	s.app.Post(sharePrefix+"*", s.unlockShare)
+	s.app.Head(uploadsPrefix+"*", s.headUpload)
+	s.app.Patch(uploadsPrefix+"*", s.patchUpload)
+	s.app.Delete(uploadsPrefix+"*", s.deleteUpload)
 	s.app.Get("/*", s.handle)
 	s.app.Put("/*", s.put)
 	s.app.Post("/*", s.postForm)
@@ -160,6 +163,12 @@ func (s *Server) Listen(ctx context.Context) error {
 		}
 	}()
 	defer func() { <-swept }()
+	purged := make(chan struct{})
+	go func() {
+		defer close(purged)
+		s.purgeUploads(ctx)
+	}()
+	defer func() { <-purged }()
 
 	served := make(chan error, 1)
 	go func() {

@@ -153,7 +153,7 @@ func TestPasswordPageModes(t *testing.T) {
 			t.Errorf("forced password page lacks %s", want)
 		}
 	}
-	if strings.Contains(body, "Cancel") {
+	if strings.Contains(body, ">Cancel</a>") {
 		t.Error("forced password page offers to cancel")
 	}
 }

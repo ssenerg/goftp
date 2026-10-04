@@ -409,7 +409,8 @@
   }
 
   // Uploads: files chosen or dropped anywhere on the page are sent one by
-  // one, with progress.
+  // one, with progress. They resume after a lost connection, and after a
+  // reload once the same file is chosen again.
   const form = $("#upload");
   if (!form) return;
   const picker = $("input[type=file]", form);
@@ -431,13 +432,16 @@
     if (active) {
       text.textContent = `Uploading… ${done} of ${done + failed + active} done`;
       h.append(text);
-    } else {
+    } else if (done || failed) {
       text.textContent = failed ? `${done} uploaded, ${failed} failed` : `${done} uploaded`;
       const refresh = document.createElement("a");
       refresh.href = form.action;
       refresh.className = "btn small";
       refresh.textContent = "Refresh list";
       h.append(text, refresh);
+    } else {
+      text.textContent = "Unfinished uploads";
+      h.append(text);
     }
     panel.hidden = false;
   };
@@ -464,42 +468,216 @@
       case 403: return replace && !replace.checked
         ? "You may not upload this here."
         : "You may not upload or replace this here.";
+      case 404: return "This folder is no longer here.";
       case 409: return replace && !replace.checked
         ? "Already exists: tick “Replace files that already exist”, or rename it."
         : "A file or folder with this name exists or is being uploaded.";
       case 413: return "The file is too large.";
-      case 507: return "The server is out of disk space.";
+      case 507: return "The server is out of disk space. What arrived is kept: choose the file again later.";
       default: return `Upload failed (error ${status}).`;
     }
   };
 
-  const send = file => new Promise(resolve => {
+  // Uploads speak tus (tus.io): a POST to the folder starts one, PATCH
+  // requests send it in parts, and HEAD says how much arrived. Unfinished
+  // uploads are remembered per file in this browser.
+  const folder = form.getAttribute("action");
+  const part = 64 << 20;
+  const storePrefix = "goftp-upload\n" + folder + "\n";
+  const store = {
+    key: (file, replacing) => storePrefix + [file.name, file.size, file.lastModified, replacing ? 1 : 0].join("\n"),
+    get(key) {
+      try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+    },
+    set(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage disabled */ }
+    },
+    remove(key) {
+      try { localStorage.removeItem(key); } catch { /* storage disabled */ }
+    },
+    keys() {
+      try { return Object.keys(localStorage).filter(k => k.startsWith(storePrefix)); } catch { return []; }
+    },
+  };
+  const base64 = s => btoa(Array.from(new TextEncoder().encode(s), b => String.fromCharCode(b)).join(""));
+
+  // request sends one request of the upload t. It resolves with the answer,
+  // with status 0 when the connection failed or the request was cancelled.
+  const request = (t, method, url, headers, body, onProgress) => new Promise(resolve => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method, url);
+    xhr.setRequestHeader("Tus-Resumable", "1.0.0");
+    for (const [k, v] of Object.entries(headers || {})) xhr.setRequestHeader(k, v);
+    if (onProgress) xhr.upload.addEventListener("progress", e => onProgress(e.loaded));
+    for (const type of ["load", "error", "abort", "timeout"]) xhr.addEventListener(type, () => resolve(xhr));
+    t.xhr = xhr;
+    xhr.send(body || null);
+  });
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+  // discard cancels an upload on the server; a request still writing it
+  // is cut off soon.
+  const discard = async url => {
+    for (let i = 0; i < 10; i++) {
+      const res = await request({}, "DELETE", url);
+      if (res.status !== 423 && res.status !== 0) return;
+      await sleep(1000);
+    }
+  };
+
+  // pause waits before the next try, longer after each failure, and stops
+  // waiting when the browser is back online or the upload is cancelled.
+  const pause = (t, failures) => new Promise(resolve => {
+    let left = Math.min(30, 2 ** (failures - 1));
+    let timer;
+    const stop = () => {
+      clearTimeout(timer);
+      removeEventListener("online", stop);
+      resolve();
+    };
+    const tick = () => {
+      if (t.cancelled || left <= 0) return stop();
+      t.m.textContent = `Connection lost. Trying again in ${left} s…`;
+      left--;
+      timer = setTimeout(tick, 1000);
+    };
+    addEventListener("online", stop);
+    tick();
+  });
+
+  // send uploads file and resolves with whether it was stored.
+  const send = async file => {
+    const replacing = Boolean(replace && replace.checked);
+    const key = store.key(file, replacing);
+    for (const r of $$(".transfer.paused", panel)) {
+      if (r.dataset.key === key) r.remove();
+    }
     const t = row(file.name, human(file.size), "clock");
     const bar = document.createElement("progress");
     bar.max = 1;
     bar.value = 0;
-    t.r.append(bar);
-    const data = new FormData();
-    if (replace && replace.checked) data.append("replace", "1");
-    data.append("file", file, file.name);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", form.action);
-    xhr.upload.addEventListener("progress", e => {
-      if (e.lengthComputable) {
-        bar.value = e.loaded / e.total;
-        t.m.textContent = `${human(e.loaded)} of ${human(e.total)}`;
-      }
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "icon-btn transfer-btn";
+    cancel.setAttribute("aria-label", `Cancel uploading ${file.name}`);
+    cancel.title = "Cancel";
+    cancel.append(icon("x"));
+    cancel.addEventListener("click", () => {
+      t.cancelled = true;
+      if (t.xhr) t.xhr.abort();
     });
-    const finish = ok => {
+    t.r.append(cancel, bar);
+    const show = n => {
+      bar.value = file.size ? n / file.size : 1;
+      t.m.textContent = `${human(n)} of ${human(file.size)}`;
+    };
+    const finish = (ok, status) => {
+      cancel.remove();
       t.r.classList.add(ok ? "done" : "failed");
       t.r.firstChild.replaceWith(icon(ok ? "check" : "alert"));
-      t.m.textContent = ok ? human(file.size) : reason(xhr.status);
-      resolve(ok);
+      t.m.textContent = ok ? human(file.size) : t.cancelled ? "Cancelled." : reason(status);
+      return ok;
     };
-    xhr.addEventListener("load", () => finish(xhr.status === 201));
-    xhr.addEventListener("error", () => finish(false));
-    xhr.send(data);
-  });
+
+    const saved = store.get(key);
+    let url = saved && saved.url;
+    let offset = null; // what the server has, once known
+    let failures = 0;
+    let restarted = false;
+    for (;;) {
+      if (t.cancelled) {
+        if (url) discard(url);
+        store.remove(key);
+        return finish(false);
+      }
+      let res;
+      const patching = url && offset !== null;
+      if (!url) {
+        const meta = "filename " + base64(file.name) + (replacing ? ",replace " + base64("1") : "");
+        res = await request(t, "POST", folder, { "Upload-Length": String(file.size), "Upload-Metadata": meta });
+        if (res.status === 201) {
+          url = new URL(res.getResponseHeader("Location"), location.href).pathname;
+          if (file.size === 0) return finish(true);
+          store.set(key, { url, name: file.name, size: file.size });
+          offset = 0;
+          continue;
+        }
+      } else if (offset === null) {
+        res = await request(t, "HEAD", url);
+        if (res.status === 200) {
+          offset = Number(res.getResponseHeader("Upload-Offset"));
+          show(offset);
+          continue;
+        }
+      } else {
+        const start = offset;
+        res = await request(t, "PATCH", url, { "Upload-Offset": String(start), "Content-Type": "application/offset+octet-stream" },
+          file.slice(start, Math.min(file.size, start + part)), n => show(start + n));
+        if (res.status === 204) {
+          offset = Number(res.getResponseHeader("Upload-Offset"));
+          failures = 0;
+          show(offset);
+          if (offset >= file.size) {
+            store.remove(key);
+            return finish(true);
+          }
+          continue;
+        }
+      }
+      if (t.cancelled) continue;
+      if (res.status === 404 && url && !restarted) {
+        // Expired, or dropped as it could not be stored: start over once,
+        // which also says why.
+        store.remove(key);
+        url = null;
+        offset = null;
+        restarted = true;
+        continue;
+      }
+      const s = res.status;
+      const passing = s === 0 || s === 408 || s === 423 || s === 429 || (s >= 500 && s !== 507) || (s === 409 && patching);
+      if (!passing) {
+        if (s !== 507) store.remove(key);
+        return finish(false, s);
+      }
+      // Go on from what the server has.
+      offset = null;
+      if (++failures > 20) return finish(false, 0);
+      await pause(t, failures);
+    }
+  };
+
+  // Uploads into this folder that a reload or a closed tab cut off go on
+  // once the same file is chosen again.
+  (async () => {
+    for (const key of store.keys()) {
+      const saved = store.get(key);
+      if (!saved || typeof saved.url !== "string") {
+        store.remove(key);
+        continue;
+      }
+      const res = await request({}, "HEAD", saved.url);
+      if (res.status === 404) store.remove(key);
+      if (res.status !== 200) continue;
+      const arrived = Number(res.getResponseHeader("Upload-Offset"));
+      const t = row(saved.name, `${human(arrived)} of ${human(saved.size)} arrived. Choose the file again to go on.`, "clock");
+      t.r.classList.add("paused");
+      t.r.dataset.key = key;
+      const drop = document.createElement("button");
+      drop.type = "button";
+      drop.className = "btn small transfer-btn";
+      drop.textContent = "Discard";
+      drop.addEventListener("click", async () => {
+        drop.disabled = true;
+        await discard(saved.url);
+        store.remove(key);
+        t.r.remove();
+        if (!$(".transfer", panel)) panel.hidden = true;
+      });
+      t.r.append(drop);
+      heading();
+    }
+  })();
 
   const upload = async files => {
     if (!files.length) return;

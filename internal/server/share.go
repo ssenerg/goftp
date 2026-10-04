@@ -504,15 +504,18 @@ func formPath(p string) (string, bool) {
 	return path.Clean(p), true
 }
 
-// logPath hides the token in the path of a share link: more people read
-// logs than may open what links lead to.
+// logPath hides the token in the path of a share link or an upload: more
+// people read logs than may open what links lead to.
 func logPath(p string) string {
-	rest, ok := strings.CutPrefix(p, sharePrefix)
-	if !ok {
-		return p
+	for _, prefix := range []string{sharePrefix, uploadsPrefix} {
+		rest, ok := strings.CutPrefix(p, prefix)
+		if !ok {
+			continue
+		}
+		if _, after, found := strings.Cut(rest, "/"); found {
+			return prefix + "***/" + after
+		}
+		return prefix + "***"
 	}
-	if _, after, found := strings.Cut(rest, "/"); found {
-		return sharePrefix + "***/" + after
-	}
-	return sharePrefix + "***"
+	return p
 }
