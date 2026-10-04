@@ -168,9 +168,9 @@ func TestPutUpload(t *testing.T) {
 		t.Errorf("leftover files: %v", l)
 	}
 
-	resp, _ = f.do(t, "DELETE", "/sub/new.txt")
+	resp, _ = f.do(t, "PATCH", "/sub/new.txt")
 	expectStatus(t, resp, 405)
-	if got := resp.Header.Get("Allow"); got != "GET, HEAD, PUT, POST" {
+	if got := resp.Header.Get("Allow"); got != allowedMethods {
 		t.Errorf("Allow %q", got)
 	}
 }

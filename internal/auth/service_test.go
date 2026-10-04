@@ -202,15 +202,18 @@ func TestPolicyAdministration(t *testing.T) {
 		for _, g := range roles {
 			rules = append(rules, append([]string{"g"}, g...))
 		}
-		// The first migration seeds the same rules as the in-memory default.
-		if !slices.EqualFunc(rules, auth.DefaultPolicies, slices.Equal) {
-			t.Errorf("policies %v, want %v", rules, auth.DefaultPolicies)
+		// The migrations seed the same rules as the in-memory default.
+		sorted := func(rules [][]string) [][]string {
+			return slices.SortedFunc(slices.Values(rules), func(a, b []string) int { return slices.Compare(a, b) })
+		}
+		if got, want := sorted(rules), sorted(auth.DefaultPolicies); !slices.EqualFunc(got, want, slices.Equal) {
+			t.Errorf("policies %v, want %v", got, want)
 		}
 
 		for _, rule := range [][3]string{
 			{"root", "/*", "read"}, {"user:X", "/*", "read"}, {"user", "docs/*", "read"}, {"user", "/a/../b", "read"},
 			{"user", "/a//b", "read"}, {"user", "/*/x", "read"}, {"user", "/a\\b", "read"}, {"user", "/a\nb", "read"},
-			{"user", "/a", "delete"}, {"user", "", "read"}, {"anonymous", "/pub*", "read"}, {"user", "*", "read"},
+			{"user", "/a", "remove"}, {"user", "", "read"}, {"anonymous", "/pub*", "read"}, {"user", "*", "read"},
 		} {
 			if _, err := svc.AddPolicy(rule[0], rule[1], rule[2]); err == nil {
 				t.Errorf("AddPolicy(%q) accepted", rule)

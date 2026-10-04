@@ -136,7 +136,13 @@ func TestWatchPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := fresh.GetPolicy(); len(got) != 4 {
+	perms := 0
+	for _, rule := range auth.DefaultPolicies {
+		if rule[0] == "p" {
+			perms++
+		}
+	}
+	if got, _ := fresh.GetPolicy(); len(got) != perms {
 		t.Errorf("policies after SavePolicy: %v", got)
 	}
 }

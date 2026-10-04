@@ -119,7 +119,13 @@ func (s *Server) handleError(c fiber.Ctx, err error) error {
 // other clients. detail is shown as is.
 func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 	code := fiber.StatusInternalServerError
-	var fe *fiber.Error
+	var (
+		fe *fiber.Error
+		ex *explained
+	)
+	if errors.As(err, &ex) && detail == "" {
+		detail = ex.detail
+	}
 	if errors.As(err, &fe) {
 		code = fe.Code
 	} else {

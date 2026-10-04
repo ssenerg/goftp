@@ -60,7 +60,7 @@ func (s *Server) handle(c fiber.Ctx) error {
 	// Denials look like missing entries from here on: they reveal neither
 	// the kind of entry (only the other kind may be read) nor where a
 	// symlink leads.
-	if ok, err := s.mayRead(c, urlPath, realPath, info.IsDir()); err != nil || !ok {
+	if ok, err := s.mayAt(c, auth.ActRead, urlPath, realPath, info.IsDir()); err != nil || !ok {
 		_ = f.Close()
 		if err != nil {
 			return err
@@ -109,17 +109,6 @@ func rootName(urlPath string) string {
 		return name
 	}
 	return "."
-}
-
-// mayRead reports whether the visitor may read the entry at urlPath: a
-// symlink grants nothing its target's rules do not, so realPath (where
-// symlinks lead, see resolve) has to be readable as well.
-func (s *Server) mayRead(c fiber.Ctx, urlPath, realPath string, dir bool) (bool, error) {
-	ok, err := s.allowed(c, object(urlPath, dir), auth.ActRead)
-	if err != nil || !ok || realPath == urlPath {
-		return ok, err
-	}
-	return s.allowed(c, object(realPath, dir), auth.ActRead)
 }
 
 // resolve returns the URL path where name (relative to the root) really

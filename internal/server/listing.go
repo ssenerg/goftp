@@ -83,6 +83,28 @@ type listing struct {
 	Summary  string
 	Uploaded int
 	Created  *listItem
+	Renamed  *listItem
+	Deleted  bool
+	Manage   bool      // some entry may be renamed or deleted
+	Selected *listItem // its rename and delete forms are shown
+}
+
+// itemForms is what the rename and delete forms of an entry show.
+type itemForms struct {
+	Action               string
+	Name                 string
+	IsDir                bool
+	CanRename, CanDelete bool
+}
+
+// Forms describes the rename and delete forms for it; nil gives the blank
+// ones the page's script fills in.
+func (l listing) Forms(it *listItem) itemForms {
+	f := itemForms{Action: l.Action}
+	if it != nil {
+		f.Name, f.IsDir, f.CanRename, f.CanDelete = it.Name, it.IsDir, it.CanRename, it.CanDelete
+	}
+	return f
 }
 
 type crumb struct {
@@ -104,10 +126,13 @@ type listItem struct {
 	ModTime string
 	ModISO  string
 	IsDir   bool
-	New     bool // just created
-	size    int64
-	mod     time.Time
-	real    string // URL path where it really lives (see resolve)
+	New     bool // just created or renamed
+	// CanDelete and CanRename tell the visitor's rights on the entry.
+	CanDelete, CanRename bool
+	Selected             bool // its forms are shown
+	size                 int64
+	mod                  time.Time
+	real                 string // URL path where it really lives (see resolve)
 }
 
 // SortHref links a column header: a second click reverses the order.
@@ -149,6 +174,10 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		}
 	}
 	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)), Crumbs: crumbs(urlPath)}
+	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
+	if err != nil {
+		return err
+	}
 	data.Items = make([]listItem, 0, len(entries))
 	var (
 		dirs, files int
@@ -163,11 +192,17 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 			continue
 		}
 		// Only what the visitor may open is listed.
-		if ok, err := s.mayRead(c, path.Join(urlPath, item.Name), item.real, item.IsDir); err != nil {
+		if ok, err := s.mayAt(c, auth.ActRead, path.Join(urlPath, item.Name), item.real, item.IsDir); err != nil {
 			return err
 		} else if !ok {
 			continue
 		}
+		if item.CanDelete, err = s.mayAt(c, auth.ActDelete, path.Join(urlPath, item.Name), path.Join(realPath, item.Name), item.IsDir); err != nil {
+			return err
+		}
+		// Renaming creates an entry, so it needs the right to create here.
+		item.CanRename = item.CanDelete && create
+		data.Manage = data.Manage || item.CanDelete
 		data.Items = append(data.Items, item)
 		if item.IsDir {
 			dirs++
@@ -196,20 +231,24 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	if n, err := strconv.Atoi(c.Query("uploaded")); err == nil && n > 0 {
 		data.Uploaded = n
 	}
-	// Only a folder that is listed is confirmed, so the link cannot be used
-	// to show made-up text.
-	if name := c.Query("created"); name != "" {
-		for i := range data.Items {
-			if it := &data.Items[i]; it.IsDir && it.Name == name {
-				it.New = true
-				data.Created = it
+	// Only entries that are listed are confirmed, so links cannot be used to
+	// show made-up text.
+	created, renamed, selected := c.Query("created"), c.Query("renamed"), c.Query("item")
+	for i := range data.Items {
+		switch it := &data.Items[i]; it.Name {
+		case created:
+			if it.IsDir {
+				it.New, data.Created = true, it
+			}
+		case renamed:
+			it.New, data.Renamed = true, it
+		case selected:
+			if it.CanDelete {
+				it.Selected, data.Selected = true, it
 			}
 		}
 	}
-	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
-	if err != nil {
-		return err
-	}
+	data.Deleted = c.Query("deleted") == "1"
 	if create || replace {
 		data.Upload = &uploadForm{Action: data.Action, Replace: replace}
 	}

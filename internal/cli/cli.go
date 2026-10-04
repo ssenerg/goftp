@@ -287,8 +287,8 @@ func policyCmd() *cobra.Command {
 		Short: "Manage access rules",
 		Long: "Access rules allow a subject to perform an action on URL paths.\n\n" +
 			"Subjects: a role (" + strings.Join(auth.Roles, ", ") + "), " + auth.Anonymous + " or user:NAME.\n" +
-			"Actions:  " + auth.ActRead + " (list, download), " + auth.ActWrite + " (upload new files), " +
-			auth.ActOverwrite + " (replace files) or *.\n" +
+			"Actions:  " + auth.ActRead + " (list, download), " + auth.ActWrite + " (upload new files, create folders), " +
+			auth.ActOverwrite + " (replace files), " + auth.ActDelete + " (delete, rename) or *.\n" +
 			"Paths:    \"/docs/*\" covers /docs/ and everything below it; \"/docs/\" is just the listing.\n\n" +
 			"Roles inherit the rules of the roles below them: " + strings.Join(auth.Roles, " > ") + ".",
 		Args: cobra.NoArgs,

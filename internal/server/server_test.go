@@ -469,10 +469,10 @@ func TestConditionalRequests(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	f := newFixture(t)
-	for _, method := range []string{"DELETE", "OPTIONS", "PATCH"} {
+	for _, method := range []string{"OPTIONS", "PATCH"} {
 		resp, _ := f.do(t, method, "/")
 		expectStatus(t, resp, 405)
-		if got := resp.Header.Get("Allow"); got != "GET, HEAD, PUT, POST" {
+		if got := resp.Header.Get("Allow"); got != "GET, HEAD, PUT, POST, DELETE" {
 			t.Errorf("%s: Allow %q", method, got)
 		}
 	}
@@ -488,7 +488,7 @@ func TestAccessLog(t *testing.T) {
 	f.do(t, "GET", "/a.txt?q=1")
 	f.do(t, "HEAD", "/a.txt")
 	f.as("").do(t, "GET", "/a.txt")
-	f.do(t, "DELETE", "/a.txt")
+	f.do(t, "PATCH", "/a.txt")
 	f.do(t, "PROPFIND", "/a.txt")
 	f.do(t, "GET", "/missing")
 	f.do(t, "GET", "/")
@@ -501,7 +501,7 @@ func TestAccessLog(t *testing.T) {
 		"GET /a.txt 200 5",
 		"HEAD /a.txt 200 0",
 		"GET /a.txt 401 12",
-		"DELETE /a.txt 405 18",
+		"PATCH /a.txt 405 18",
 		"PROPFIND /a.txt 501 15",
 		"GET /missing 404 9",
 	}

@@ -15,6 +15,12 @@
   {{with .Created}}
   <div class="alert success banner" id="created" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Created the folder <a href="{{.Href}}">{{.Name}}</a>.</span></div>
   {{end}}
+  {{with .Renamed}}
+  <div class="alert success banner" id="renamed" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>Renamed to <a href="{{.Href}}">{{.Name}}</a>.</span></div>
+  {{end}}
+  {{if .Deleted}}
+  <div class="alert success banner" id="deleted" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>Deleted.</div>
+  {{end}}
 
   <div class="head">
     <div>
@@ -68,6 +74,14 @@
   <div id="drop" class="drop-overlay" hidden><div><svg class="i" aria-hidden="true"><use href="#i-upload"/></svg>Drop to upload to <strong>{{$.Title}}</strong></div></div>
   {{end}}
 
+  {{with .Selected}}
+  <section class="card manage" aria-labelledby="manage-title">
+    <h2 id="manage-title"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></h2>
+    {{template "item-forms" ($.Forms .)}}
+    <p><a href="{{$.Action}}">Cancel</a></p>
+  </section>
+  {{end}}
+
   <div class="card">
     {{if .Items}}
     <table class="files">
@@ -75,20 +89,23 @@
         <th aria-sort="{{.SortState "name"}}"><a href="{{.SortHref "name"}}">Name</a></th>
         <th class="num" aria-sort="{{.SortState "size"}}"><a href="{{.SortHref "size"}}">Size</a></th>
         <th class="date" aria-sort="{{.SortState "modified"}}"><a href="{{.SortHref "modified"}}">Modified</a></th>
+        {{if .Manage}}<th class="act"><span class="vh">Actions</span></th>{{end}}
       </tr></thead>
       <tbody>
         {{with .Parent}}
-        <tr class="up"><td class="name" colspan="3"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
+        <tr class="up"><td class="name" colspan="{{if $.Manage}}4{{else}}3{{end}}"><a href="{{.}}"><svg class="i kind" aria-hidden="true"><use href="#i-up"/></svg><span>Parent folder</span></a></td></tr>
         {{end}}
         {{range .Items}}
-        <tr data-name="{{.Key}}"{{if .New}} class="new"{{end}}>
+        <tr data-name="{{.Key}}"{{if .Selected}} class="selected"{{else if .New}} class="new"{{end}}>
           <td class="name"><a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
+          {{if $.Manage}}<td class="act">{{if .CanDelete}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" aria-label="{{if .CanRename}}Rename or delete{{else}}Delete{{end}} {{.Name}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
         </tr>
         {{end}}
       </tbody>
     </table>
+    {{if .Manage}}<template id="item-actions">{{template "item-forms" ($.Forms nil)}}</template>{{end}}
     <div id="no-match" class="empty" hidden><svg class="i" aria-hidden="true"><use href="#i-search"/></svg><p>Nothing here matches your filter.</p></div>
     {{else}}
     <div class="empty">
@@ -105,4 +122,21 @@
 {{script}}
 </body>
 </html>
+{{end}}
+
+{{define "item-forms"}}
+<form method="post" action="{{.Action}}" class="item-form" data-kind="rename"{{if not .CanRename}} hidden{{end}}>
+  <input type="hidden" name="rename" value="{{.Name}}">
+  <label class="field"><span>Name</span>
+    <input name="to" value="{{.Name}}" required maxlength="200" autocomplete="off" spellcheck="false">
+  </label>
+  <p class="popover-error" role="alert" hidden></p>
+  <div class="popover-actions"><button type="submit" class="btn primary small">Rename</button></div>
+</form>
+<form method="post" action="{{.Action}}" class="item-form" data-kind="delete"{{if not .CanDelete}} hidden{{end}}>
+  <input type="hidden" name="delete" value="{{.Name}}">
+  <p class="delete-note">{{if .IsDir}}Delete this folder and everything in it?{{else}}Delete this file?{{end}} This cannot be undone.</p>
+  <p class="popover-error" role="alert" hidden></p>
+  <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
+</form>
 {{end}}
