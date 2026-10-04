@@ -219,6 +219,17 @@
     font: inherit;
   }
   input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  select {
+    height: 42px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
   .pw { position: relative; display: block; }
   .pw input { padding-right: 64px; }
   .pw-toggle {
@@ -264,7 +275,7 @@
   .head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
   .head h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; word-break: break-word; display: flex; align-items: center; gap: 10px; }
   .head .summary { margin-top: 4px; color: var(--muted); font-size: 14px; }
-  .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); letter-spacing: 0; }
+  .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); letter-spacing: 0; white-space: nowrap; }
   .search { position: relative; width: 280px; max-width: 100%; }
   .search .i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .search input { padding-left: 38px; padding-right: 36px; height: 40px; }
@@ -329,6 +340,50 @@
   .delete-note { color: var(--muted); font-size: 13px; }
   .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; filter: brightness(0.92); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tabs a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .tabs a:hover { color: var(--text); }
+  .tabs a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .admin-form { padding: 18px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .admin-form h2 { font-size: 16px; }
+  .admin-form p { font-size: 13.5px; }
+  .inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+  .inline-form .field { flex: 1 1 180px; }
+  .inline-form .btn { height: 42px; }
+  .admin-table td { font-size: 14px; }
+  .admin-table td.act { width: auto; white-space: nowrap; }
+  .who-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 500; }
+  .who-cell .avatar { width: 28px; height: 28px; font-size: 12.5px; }
+  .chip.warn { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+  .role-form { display: flex; align-items: center; gap: 8px; }
+  .role-form select { height: 32px; font-size: 13.5px; }
+  .confirm { position: relative; display: inline-block; }
+  .confirm > summary { list-style: none; cursor: pointer; }
+  .confirm > summary::-webkit-details-marker { display: none; }
+  .confirm[open] > summary { background: var(--hover); color: var(--text); }
+  .confirm .popover { white-space: normal; text-align: left; font-size: 13.5px; }
+  .onetime > div { display: flex; flex-direction: column; gap: 8px; }
+  .copyable { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .copyable code {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    user-select: all;
+  }
+  .onetime-note { font-size: 13px; opacity: 0.85; }
   .manage { display: flex; flex-direction: column; gap: 14px; max-width: 420px; padding: 18px; margin-bottom: 16px; }
   .manage h2 { display: flex; align-items: center; gap: 10px; font-size: 16px; overflow-wrap: anywhere; }
   .manage .item-form + .item-form:not([hidden]) { border-top: 1px solid var(--border); padding-top: 14px; }
@@ -466,6 +521,16 @@
   }
   @media (max-width: 720px) {
     .files .date { display: none; }
+    /* Each user or rule becomes a block: who on top, the rest below. */
+    .admin-table thead { display: none; }
+    .admin-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .admin-table tbody tr:last-child { border-bottom: 0; }
+    .admin-table tbody tr:hover { background: var(--hover); }
+    .admin-table tbody tr:hover td { background: none; }
+    .files.admin-table td { display: block; width: auto; height: auto; padding: 0; border: 0; }
+    .files.admin-table td.date { display: none; }
+    .admin-table td.name { flex: 1 1 100%; }
+    .admin-table td.act { margin-left: auto; }
   }
   @media (max-width: 560px) {
     .topbar { height: 56px; padding: 0 14px; }
@@ -491,6 +556,7 @@
     <summary aria-label="Account menu"><span class="avatar" aria-hidden="true">{{initial .User}}</span><span class="who">{{.User}}</span>{{with .Role}}<span class="badge">{{.}}</span>{{end}}<svg class="i chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <div class="menu-panel">
       <div class="menu-head">Signed in as <strong>{{.User}}</strong>{{with .Role}}<span class="role">{{.}}</span>{{end}}</div>
+      {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
@@ -516,6 +582,8 @@
   <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5m0 3.5h.01"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M15.5 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/></g></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 7V5h4v2m-7.5 0 .8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M10.2 11v5.5m3.6-5.5v5.5"/></symbol>
   <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h7.4A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.8v5.4M9.3 13.5h5.4"/></symbol>

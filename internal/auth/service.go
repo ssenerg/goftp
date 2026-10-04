@@ -207,6 +207,14 @@ func (s *Service) Allowed(u *User, obj, act string) (bool, error) {
 	return s.enforcer.Enforce(Anonymous, obj, act)
 }
 
+// IsSuperadmin reports whether username holds the role that administers
+// users and rules. It goes by the role, not by rules, so that no rule
+// change can lock administrators out.
+func (s *Service) IsSuperadmin(username string) bool {
+	ok, err := s.enforcer.HasRoleForUser(Subject(username), Superadmin)
+	return ok && err == nil
+}
+
 // Role returns the roles assigned to username, comma separated.
 func (s *Service) Role(username string) string {
 	roles, _ := s.enforcer.GetRolesForUser(Subject(username))

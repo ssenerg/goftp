@@ -216,6 +216,36 @@
     });
   }
 
+  // Copy buttons, for temporary passwords and links shown once.
+  for (const button of $$("button[data-copy]")) {
+    const source = document.getElementById(button.dataset.copy);
+    if (!source || !navigator.clipboard) continue;
+    button.hidden = false;
+    button.addEventListener("click", async () => {
+      const label = button.lastChild;
+      try {
+        await navigator.clipboard.writeText(source.textContent.trim());
+        label.textContent = "Copied";
+      } catch {
+        getSelection().selectAllChildren(source);
+        label.textContent = "Select and copy";
+      }
+    });
+  }
+
+  // Confirmation popovers close on Escape and on clicks elsewhere.
+  for (const box of $$("details.confirm")) {
+    box.addEventListener("keydown", e => {
+      if (e.key === "Escape" && box.open) {
+        box.open = false;
+        $("summary", box).focus();
+      }
+    });
+    document.addEventListener("click", e => {
+      if (box.open && !box.contains(e.target)) box.open = false;
+    });
+  }
+
   // Password fields: show/hide, and a warning while Caps Lock is on.
   for (const input of $$(".pw input")) {
     const toggle = document.createElement("button");

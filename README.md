@@ -21,8 +21,10 @@ docker compose exec goftp goftp user add alice --role superadmin
 ```
 
 `user add` prints a temporary password. Open http://localhost:8080, sign in
-and choose a new password. The database lives in the `pgdata` volume, the
-files in the `files` volume, unless `.env` names a directory to serve:
+and choose a new password; more users can then be added in the browser
+(see [Users and roles](#users-and-roles)). The database lives in the
+`pgdata` volume, the files in the `files` volume, unless `.env` names a
+directory to serve:
 
 ```sh
 GOFTP_DATA=/mnt/storage/shared   # e.g. a disk, mounted before goftp starts
@@ -37,7 +39,14 @@ let goftp serve HTTPS itself with `GOFTP_TLS_DIR`, `GOFTP_TLS_CERT` and
 
 ## Users and roles
 
-Sign-up happens on the command line, which needs access to the database:
+Superadmins manage users and access rules in the browser, under **Users and
+rules** in their account menu (`/.admin/`). Adding a user or resetting a
+password shows a temporary password once, for you to pass on. The page
+leaves the signed-in superadmin's own account alone, so nobody locks
+themselves out there; another superadmin or the command line can change it.
+
+The command line does the same, and makes the first superadmin; it needs
+access to the database:
 
 ```sh
 goftp user add bob --role operator   # prints a temporary password
@@ -59,7 +68,8 @@ all their other sessions.
 | `superadmin` | every action (`*`)                                            |
 
 These are Casbin rules on URL paths, kept in the `casbin_rule` table and
-editable while the server runs (servers reload them within a moment):
+editable while the server runs, on the **Rules** tab or with `goftp policy`
+(servers reload them within a moment):
 
 ```sh
 goftp policy list

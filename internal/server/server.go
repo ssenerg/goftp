@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,6 +114,12 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 	s.app.Post(logoutPath, s.logout)
 	s.app.Get(passwordPath, s.passwordPage)
 	s.app.Post(passwordPath, s.changePassword)
+	s.app.Get(strings.TrimSuffix(adminPath, "/"), s.adminHome)
+	s.app.Get(adminPath, s.adminHome)
+	s.app.Get(usersPath, s.usersPage)
+	s.app.Post(usersPath, s.usersAction)
+	s.app.Get(rulesPath, s.rulesPage)
+	s.app.Post(rulesPath, s.rulesAction)
 	s.app.Get("/*", s.handle)
 	s.app.Put("/*", s.put)
 	s.app.Post("/*", s.postForm)

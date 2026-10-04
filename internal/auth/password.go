@@ -28,8 +28,11 @@ const (
 	MaxPasswordLength = 256
 )
 
+// Superadmin is the role that administers users and rules.
+const Superadmin = "superadmin"
+
 // Roles, from most to least privileged.
-var Roles = []string{"superadmin", "admin", "operator", "user"}
+var Roles = []string{Superadmin, "admin", "operator", "user"}
 
 var (
 	ErrWeakPassword    = errors.New("password does not meet the policy")

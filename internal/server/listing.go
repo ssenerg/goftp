@@ -39,6 +39,13 @@ var scriptHash = func() string {
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"script":  func() template.HTML { return template.HTML("<script>" + appJS + "</script>") },
 	"initial": func(s string) string { return strings.ToUpper(s[:min(1, len(s))]) },
+	// actionName describes a rule's action for people.
+	"actionName": func(act string) string {
+		return map[string]string{
+			auth.ActRead: "read", auth.ActWrite: "add files and folders", auth.ActOverwrite: "replace files",
+			auth.ActDelete: "delete and rename", "*": "do anything",
+		}[act]
+	},
 }).ParseFS(templateFS, "templates/*.html"))
 
 // page holds what every page shows.
@@ -46,6 +53,7 @@ type page struct {
 	Title     string
 	User      string
 	Role      string
+	Admin     bool // may administer users and rules
 	Here      string
 	MinLength int
 }
@@ -55,6 +63,7 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 	if u := userOf(c); u != nil {
 		p.User = u.Username
 		p.Role = s.auth.Role(u.Username)
+		p.Admin = s.auth.IsSuperadmin(u.Username)
 	}
 	return p
 }
