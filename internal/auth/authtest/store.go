@@ -2,6 +2,7 @@
 package authtest
 
 import (
+	"cmp"
 	"context"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ type Store struct {
 	nextID   int64
 	users    map[int64]*auth.User
 	sessions map[string]session
+	shares   map[string]*auth.Share // by token hash
 }
 
 type session struct {
@@ -26,7 +28,7 @@ type session struct {
 var _ auth.Store = (*Store)(nil)
 
 func NewStore() *Store {
-	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session)}
+	return &Store{users: make(map[int64]*auth.User), sessions: make(map[string]session), shares: make(map[string]*auth.Share)}
 }
 
 // NewService returns a service with an empty store and the default policy.
@@ -92,6 +94,9 @@ func (s *Store) SetPassword(_ context.Context, userID int64, passwordHash string
 	}
 	u.PasswordHash, u.MustChangePassword = passwordHash, mustChange
 	s.deleteSessions(userID)
+	if mustChange {
+		s.deleteShares(userID)
+	}
 	return nil
 }
 
@@ -103,6 +108,7 @@ func (s *Store) DeleteUser(_ context.Context, userID int64) error {
 	}
 	delete(s.users, userID)
 	s.deleteSessions(userID)
+	s.deleteShares(userID)
 	return nil
 }
 
@@ -148,6 +154,86 @@ func (s *Store) DeleteExpiredSessions(context.Context) error {
 	for k, v := range s.sessions {
 		if !time.Now().Before(v.expires) {
 			delete(s.sessions, k)
+		}
+	}
+	return nil
+}
+
+func (s *Store) CreateShare(_ context.Context, tokenHash []byte, sh *auth.Share) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.users[sh.CreatedBy]; !ok {
+		return auth.ErrNotFound
+	}
+	n := 0
+	for _, v := range s.shares {
+		if v.CreatedBy == sh.CreatedBy && time.Now().Before(v.ExpiresAt) {
+			n++
+		}
+	}
+	if n >= auth.MaxShares {
+		return auth.ErrTooMany
+	}
+	s.nextID++
+	sh.ID, sh.CreatedAt = s.nextID, time.Now()
+	c := *sh
+	s.shares[string(tokenHash)] = &c
+	return nil
+}
+
+func (s *Store) ShareByToken(_ context.Context, tokenHash []byte) (*auth.Share, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sh, ok := s.shares[string(tokenHash)]
+	if !ok || !time.Now().Before(sh.ExpiresAt) {
+		return nil, auth.ErrNotFound
+	}
+	c := *sh
+	c.Creator = s.users[sh.CreatedBy].Username
+	return &c, nil
+}
+
+func (s *Store) Shares(_ context.Context, userID int64) ([]auth.Share, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []auth.Share
+	for _, sh := range s.shares {
+		if time.Now().Before(sh.ExpiresAt) && (userID == 0 || sh.CreatedBy == userID) {
+			c := *sh
+			c.Creator = s.users[sh.CreatedBy].Username
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b auth.Share) int { return cmp.Compare(b.ID, a.ID) })
+	return out, nil
+}
+
+func (s *Store) DeleteShare(_ context.Context, id, userID int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, sh := range s.shares {
+		if sh.ID == id && (userID == 0 || sh.CreatedBy == userID) {
+			delete(s.shares, k)
+			return nil
+		}
+	}
+	return auth.ErrNotFound
+}
+
+func (s *Store) deleteShares(userID int64) {
+	for k, sh := range s.shares {
+		if sh.CreatedBy == userID {
+			delete(s.shares, k)
+		}
+	}
+}
+
+func (s *Store) DeleteExpiredShares(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, sh := range s.shares {
+		if !time.Now().Before(sh.ExpiresAt) {
+			delete(s.shares, k)
 		}
 	}
 	return nil

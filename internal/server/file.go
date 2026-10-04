@@ -172,3 +172,5 @@ func (b *bodyStream) CloseWithError(err error) error {
 	}
 	return b.file.Close()
 }
+
+func (b *bodyStream) whenDone(f func(sent int64, err error)) { b.onClose = f }

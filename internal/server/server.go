@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,8 @@ type Server struct {
 	lockMu    sync.Mutex
 	// proxyNoted is set once untrusted proxy headers have been logged.
 	proxyNoted atomic.Bool
+
+	shareGuesses *rateLimiter // password checks per share link
 }
 
 func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, error) {
@@ -107,12 +110,24 @@ func New(cfg *config.Config, log *zap.Logger, authSvc *auth.Service) (*Server, e
 		s.limiter = newRateLimiter(cfg.Limiter.MaxFailures, cfg.Limiter.Window)
 	}
 	s.signIns = newRateLimiter(signInsPerMinute, time.Minute)
+	s.shareGuesses = newRateLimiter(shareGuessesPerMinute, time.Minute)
 	s.app.Use(s.noteProxyHeaders, s.checkOrigin, s.identify, s.requirePasswordChange)
 	s.app.Get(loginPath, s.loginPage)
 	s.app.Post(loginPath, s.login)
 	s.app.Post(logoutPath, s.logout)
 	s.app.Get(passwordPath, s.passwordPage)
 	s.app.Post(passwordPath, s.changePassword)
+	s.app.Get(strings.TrimSuffix(adminPath, "/"), s.adminHome)
+	s.app.Get(adminPath, s.adminHome)
+	s.app.Get(usersPath, s.usersPage)
+	s.app.Post(usersPath, s.usersAction)
+	s.app.Get(rulesPath, s.rulesPage)
+	s.app.Post(rulesPath, s.rulesAction)
+	s.app.Get(strings.TrimSuffix(sharesPath, "/"), func(c fiber.Ctx) error { return s.redirect(c, sharesPath) })
+	s.app.Get(sharesPath, s.sharesPage)
+	s.app.Post(sharesPath, s.sharesAction)
+	s.app.Get(sharePrefix+"*", s.shared)
+	s.app.Post(sharePrefix+"*", s.unlockShare)
 	s.app.Get("/*", s.handle)
 	s.app.Put("/*", s.put)
 	s.app.Post("/*", s.postForm)

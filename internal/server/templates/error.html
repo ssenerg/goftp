@@ -8,9 +8,13 @@
     <p class="muted">{{.Message}}</p>
     {{with .Detail}}<p class="detail">{{.}}</p>{{end}}
     <div class="row">
+      {{if .Shared}}
+      {{with .Share}}<a class="btn primary" href="{{.Root}}">Back to the shared {{if .Folder}}folder{{else}}file{{end}}</a>{{end}}
+      {{else}}
       {{if .SignIn}}<a class="btn primary" href="/.auth/login?next={{.Here}}">Sign in</a>{{end}}
       {{with .Back}}<a class="btn" href="{{.}}">Back to the folder</a>{{end}}
       <a class="btn{{if not .SignIn}} primary{{end}}" href="/">Go to all files</a>
+      {{end}}
     </div>
   </div>
 </main>

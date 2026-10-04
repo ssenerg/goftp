@@ -39,44 +39,47 @@ func (s *Server) handle(c fiber.Ctx) error {
 	if !ok {
 		return s.deny(c)
 	}
-	if dir, name := path.Split(urlPath); name != "" && s.locked(rootName(path.Clean(dir)), name) {
-		return fiber.ErrNotFound
+	f, info, realPath, err := s.lookup(urlPath, s.rulesOf(userOf(c)))
+	if err != nil {
+		return err
 	}
+	if info.IsDir() {
+		defer f.Close()
+		return s.serveDir(c, f, urlPath, realPath, wantDir)
+	}
+	return s.serveFile(c, f, info, path.Base(urlPath))
+}
 
+// lookup opens the folder or regular file at urlPath, if allow lets the
+// reader read it, and returns where it really lives (see resolve).
+// Denials look like missing entries: they reveal neither the kind of entry
+// (only the other kind may be read) nor where a symlink leads.
+func (s *Server) lookup(urlPath string, allow allowFunc) (*os.File, fs.FileInfo, string, error) {
+	if dir, name := path.Split(urlPath); name != "" && s.locked(rootName(path.Clean(dir)), name) {
+		return nil, nil, "", fiber.ErrNotFound
+	}
 	f, err := s.open(urlPath)
 	if err != nil {
-		return s.openError(err)
+		return nil, nil, "", s.openError(err)
+	}
+	fail := func(err error) (*os.File, fs.FileInfo, string, error) {
+		_ = f.Close()
+		return nil, nil, "", err
 	}
 	realPath, visible := s.resolve(rootName(urlPath), f)
 	if !visible {
-		_ = f.Close()
-		return fiber.ErrNotFound
+		return fail(fiber.ErrNotFound)
 	}
 	info, err := f.Stat()
 	if err != nil {
-		_ = f.Close()
-		return err
+		return fail(err)
 	}
-	// Denials look like missing entries from here on: they reveal neither
-	// the kind of entry (only the other kind may be read) nor where a
-	// symlink leads.
-	if ok, err := s.mayAt(c, auth.ActRead, urlPath, realPath, info.IsDir()); err != nil || !ok {
-		_ = f.Close()
-		if err != nil {
-			return err
-		}
-		return fiber.ErrNotFound
+	if ok, err := mayBoth(allow, auth.ActRead, urlPath, realPath, info.IsDir()); err != nil {
+		return fail(err)
+	} else if !ok || !info.IsDir() && !info.Mode().IsRegular() {
+		return fail(fiber.ErrNotFound)
 	}
-
-	switch {
-	case info.IsDir():
-		defer f.Close()
-		return s.serveDir(c, f, urlPath, realPath, wantDir)
-	case !info.Mode().IsRegular():
-		_ = f.Close()
-		return fiber.ErrNotFound
-	}
-	return s.serveFile(c, f, info, path.Base(urlPath))
+	return f, info, realPath, nil
 }
 
 // hidden reports whether any segment of the slash-separated path p starts

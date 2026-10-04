@@ -77,7 +77,7 @@ func (s *Server) checkOrigin(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
-	s.log.Warn("cross-origin request refused", zap.String("ip", c.IP()), zap.String("path", c.Path()))
+	s.log.Warn("cross-origin request refused", zap.String("ip", c.IP()), zap.String("path", logPath(c.Path())))
 	return fiber.ErrForbidden
 }
 
@@ -133,8 +133,8 @@ func (s *Server) requirePasswordChange(c fiber.Ctx) error {
 	if sess == nil || !sess.user.MustChangePassword {
 		return c.Next()
 	}
-	switch c.Path() {
-	case passwordPath, logoutPath:
+	// Links work for anyone, whatever their account.
+	if c.Path() == passwordPath || c.Path() == logoutPath || strings.HasPrefix(c.Path(), sharePrefix) {
 		return c.Next()
 	}
 	if browserNavigation(c) {

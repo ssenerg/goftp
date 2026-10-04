@@ -1,0 +1,138 @@
+{{define "admin"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <div class="head">
+    <div>
+      <h1>Administration</h1>
+      <p class="summary">Only superadmins see this page.</p>
+    </div>
+  </div>
+  <nav class="tabs" aria-label="Administration">
+    <a href="/.admin/users"{{if eq .Tab "users"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users</a>
+    <a href="/.admin/rules"{{if eq .Tab "rules"}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Rules</a>
+  </nav>
+
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg>{{.}}</div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Secret}}
+  <div class="alert success banner onetime" role="status">
+    <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    <div>
+      <p>{{if .New}}Added <strong>{{.User}}</strong>.{{else}}<strong>{{.User}}</strong> was signed out everywhere.{{end}} Their temporary password:</p>
+      <p class="copyable"><code id="temp-password">{{.Password}}</code><button type="button" class="btn small" data-copy="temp-password" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+      <p class="onetime-note">It is shown only here, once. They choose their own password when they sign in.</p>
+    </div>
+  </div>
+  {{end}}
+
+  {{if eq .Tab "users"}}
+  <section class="card admin-form">
+    <h2>Add a user</h2>
+    <form method="post" action="/.admin/users" class="inline-form">
+      <input type="hidden" name="action" value="add">
+      <label class="field"><span>Username</span>
+        <input name="user" required minlength="2" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._\-]{1,31}" autocomplete="off" autocapitalize="none" spellcheck="false" title="2-32 letters, digits, '.', '_' or '-', starting with a letter or digit">
+      </label>
+      <label class="field"><span>Role</span>
+        <select name="role">{{range .Roles}}<option{{if eq . "user"}} selected{{end}}>{{.}}</option>{{end}}</select>
+      </label>
+      <button type="submit" class="btn primary">Add user</button>
+    </form>
+  </section>
+
+  <div class="card">
+    <table class="files list-table">
+      <thead><tr><th>User</th><th>Role</th><th class="date">Added</th><th class="act"><span class="vh">Actions</span></th></tr></thead>
+      <tbody>
+        {{range .Users}}
+        <tr>
+          <td class="name"><span class="who-cell"><span class="avatar" aria-hidden="true">{{initial .Name}}</span><span>{{.Name}}</span>{{if .Self}}<span class="chip">you</span>{{end}}{{if .MustChange}}<span class="chip warn">must choose a password</span>{{end}}</span></td>
+          <td>
+            {{if .Self}}{{.Role}}{{else}}
+            <form method="post" action="/.admin/users" class="role-form">
+              <input type="hidden" name="action" value="role"><input type="hidden" name="user" value="{{.Name}}">
+              <select name="role" aria-label="Role of {{.Name}}">{{$role := .Role}}{{range $.Roles}}<option{{if eq . $role}} selected{{end}}>{{.}}</option>{{end}}</select>
+              <button type="submit" class="btn small">Save</button>
+            </form>
+            {{end}}
+          </td>
+          <td class="date"><time datetime="{{.AddedISO}}">{{.Added}}</time></td>
+          <td class="act">
+            {{if not .Self}}
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Reset the password of {{.Name}}" title="New temporary password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg></summary>
+              <form method="post" action="/.admin/users" class="popover">
+                <input type="hidden" name="action" value="password"><input type="hidden" name="user" value="{{.Name}}">
+                <p>Give <strong>{{.Name}}</strong> a new temporary password? This signs them out everywhere and ends their share links.</p>
+                <div class="popover-actions"><button type="submit" class="btn primary small">New password</button></div>
+              </form>
+            </details>
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Delete {{.Name}}" title="Delete"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.admin/users" class="popover">
+                <input type="hidden" name="action" value="delete"><input type="hidden" name="user" value="{{.Name}}">
+                <p>Delete <strong>{{.Name}}</strong> and their rules? This cannot be undone.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
+              </form>
+            </details>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <section class="card admin-form">
+    <h2>Add a rule</h2>
+    <p class="muted">A rule lets someone do something on a path: <code>/docs/*</code> covers <code>/docs/</code> and everything below it, <code>/docs/</code> alone just that listing. Roles also have the rights of the roles after them: {{range $i, $r := .Roles}}{{if $i}} › {{end}}{{$r}}{{end}}. Signed-in users may always do what everyone may.</p>
+    <form method="post" action="/.admin/rules" class="inline-form">
+      <input type="hidden" name="action" value="add">
+      <label class="field"><span>Who</span>
+        <select name="subject">
+          {{$group := ""}}{{range .Subjects}}{{if ne .Group $group}}{{if $group}}</optgroup>{{end}}<optgroup label="{{.Group}}">{{$group = .Group}}{{end}}<option value="{{.Value}}">{{.Label}}</option>{{end}}{{if $group}}</optgroup>{{end}}
+        </select>
+      </label>
+      <label class="field"><span>Path</span>
+        <input name="path" required placeholder="/docs/*" autocomplete="off" spellcheck="false">
+      </label>
+      <label class="field"><span>May</span>
+        <select name="act">{{range .Actions}}<option value="{{.}}">{{actionName .}}</option>{{end}}</select>
+      </label>
+      <button type="submit" class="btn primary">Add rule</button>
+    </form>
+  </section>
+
+  <div class="card">
+    <table class="files list-table">
+      <thead><tr><th>Who</th><th>Path</th><th>May</th><th class="act"><span class="vh">Remove</span></th></tr></thead>
+      <tbody>
+        {{range .Rules}}
+        <tr>
+          <td class="name">{{.Who}}</td>
+          <td><code>{{.Path}}</code></td>
+          <td>{{actionName .Action}}</td>
+          <td class="act">
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Remove the rule" title="Remove"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.admin/rules" class="popover">
+                <input type="hidden" name="action" value="remove"><input type="hidden" name="subject" value="{{.Subject}}"><input type="hidden" name="path" value="{{.Path}}"><input type="hidden" name="act" value="{{.Action}}">
+                <p>Remove this rule? {{.Who}} may then no longer {{actionName .Action}} <code>{{.Path}}</code>, unless another rule allows it.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Remove</button></div>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

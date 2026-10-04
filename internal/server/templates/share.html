@@ -1,0 +1,34 @@
+{{define "share"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container narrow">
+  {{if .Locked}}
+  <div class="card share-card">
+    <span class="share-icon" aria-hidden="true"><svg class="i"><use href="#i-lock"/></svg></span>
+    <h1>This link needs a password</h1>
+    <p class="muted">Enter the password you were given with the link.</p>
+    <form method="post" class="stack">
+      {{with .Error}}<div class="alert error" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+      <label class="field"><span>Password</span>
+        <span class="pw"><input type="password" name="password" autocomplete="off" required autofocus></span>
+        <span class="caps" hidden>Caps Lock is on</span>
+      </label>
+      <button type="submit" class="btn primary block">Open</button>
+    </form>
+  </div>
+  {{else}}{{with .File}}
+  <div class="card share-card">
+    <span class="share-icon" aria-hidden="true"><svg class="i kind k-{{.Kind}}"><use href="#i-{{.Kind}}"/></svg></span>
+    <h1>{{.Name}}</h1>
+    <p class="muted">{{.Size}} · modified <time datetime="{{.ModISO}}">{{.ModTime}}</time></p>
+    <a class="btn primary" href="{{.Href}}" download><svg class="i" aria-hidden="true"><use href="#i-download"/></svg>Download</a>
+    {{with $.Share}}<p class="muted small">Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time></p>{{end}}
+  </div>
+  {{end}}{{end}}
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

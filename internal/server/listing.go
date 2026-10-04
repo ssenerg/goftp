@@ -39,6 +39,14 @@ var scriptHash = func() string {
 var pages = template.Must(template.New("").Funcs(template.FuncMap{
 	"script":  func() template.HTML { return template.HTML("<script>" + appJS + "</script>") },
 	"initial": func(s string) string { return strings.ToUpper(s[:min(1, len(s))]) },
+	// actionName describes a rule's action for people.
+	"actionName": func(act string) string {
+		return map[string]string{
+			auth.ActRead: "read", auth.ActWrite: "add files and folders", auth.ActOverwrite: "replace files",
+			auth.ActDelete: "delete and rename", auth.ActShare: "share links", "*": "do anything",
+		}[act]
+	},
+	"expiryOptions": func() []shareTTL { return shareTTLs },
 }).ParseFS(templateFS, "templates/*.html"))
 
 // page holds what every page shows.
@@ -46,8 +54,15 @@ type page struct {
 	Title     string
 	User      string
 	Role      string
+	Admin     bool // may administer users and rules
+	Shares    bool // may share links, or administers them
 	Here      string
 	MinLength int
+	// Shared is set on pages reached through a share link, which show
+	// nothing of the visitor's account; Share describes the link if it
+	// works.
+	Shared bool
+	Share  *shareView
 }
 
 func (s *Server) page(c fiber.Ctx, title string) page {
@@ -55,6 +70,8 @@ func (s *Server) page(c fiber.Ctx, title string) page {
 	if u := userOf(c); u != nil {
 		p.User = u.Username
 		p.Role = s.auth.Role(u.Username)
+		p.Admin = s.auth.IsSuperadmin(u.Username)
+		p.Shares = p.Admin || s.auth.MayShare(u.Username)
 	}
 	return p
 }
@@ -73,6 +90,7 @@ type listing struct {
 	page
 	Path     string
 	Action   string // where this folder's forms post to
+	Home     string // where the first crumb leads
 	Crumbs   []crumb
 	Parent   string
 	Items    []listItem
@@ -85,24 +103,27 @@ type listing struct {
 	Created  *listItem
 	Renamed  *listItem
 	Deleted  bool
-	Manage   bool      // some entry may be renamed or deleted
-	Selected *listItem // its rename and delete forms are shown
+	Manage   bool      // some entry may be renamed, deleted or shared
+	Selected *listItem // its forms are shown
+	// ShareHere is set when the visitor may share this folder.
+	ShareHere bool
 }
 
-// itemForms is what the rename and delete forms of an entry show.
+// itemForms is what the rename, share and delete forms of an entry show.
 type itemForms struct {
-	Action               string
-	Name                 string
-	IsDir                bool
-	CanRename, CanDelete bool
+	Action                         string
+	Name, Path                     string
+	IsDir                          bool
+	CanRename, CanDelete, CanShare bool
 }
 
-// Forms describes the rename and delete forms for it; nil gives the blank
-// ones the page's script fills in.
+// Forms describes the forms for it; nil gives the blank ones the page's
+// script fills in.
 func (l listing) Forms(it *listItem) itemForms {
 	f := itemForms{Action: l.Action}
 	if it != nil {
-		f.Name, f.IsDir, f.CanRename, f.CanDelete = it.Name, it.IsDir, it.CanRename, it.CanDelete
+		f.Name, f.Path, f.IsDir = it.Name, it.Path, it.IsDir
+		f.CanRename, f.CanDelete, f.CanShare = it.CanRename, it.CanDelete, it.CanShare
 	}
 	return f
 }
@@ -119,6 +140,7 @@ type uploadForm struct {
 
 type listItem struct {
 	Name    string
+	Path    string // URL path
 	Key     string // lower-case name, for sorting and filtering
 	Href    string
 	Kind    string // icon: folder, image, video, ...
@@ -127,12 +149,35 @@ type listItem struct {
 	ModISO  string
 	IsDir   bool
 	New     bool // just created or renamed
-	// CanDelete and CanRename tell the visitor's rights on the entry.
-	CanDelete, CanRename bool
-	Selected             bool // its forms are shown
-	size                 int64
-	mod                  time.Time
-	real                 string // URL path where it really lives (see resolve)
+	// CanDelete, CanRename and CanShare tell the visitor's rights on the
+	// entry.
+	CanDelete, CanRename, CanShare bool
+	Selected                       bool // its forms are shown
+	size                           int64
+	mod                            time.Time
+	real                           string // URL path where it really lives (see resolve)
+}
+
+// ActionsLabel names what the visitor may do with the entry, for the
+// button of its menu: e.g. "Rename, share or delete a.txt".
+func (it listItem) ActionsLabel() string {
+	var acts []string
+	for _, a := range []struct {
+		ok   bool
+		name string
+	}{{it.CanRename, "rename"}, {it.CanShare, "share"}, {it.CanDelete, "delete"}} {
+		if a.ok {
+			acts = append(acts, a.name)
+		}
+	}
+	if len(acts) == 0 {
+		return "Actions for " + it.Name
+	}
+	label := acts[len(acts)-1]
+	if n := len(acts); n > 1 {
+		label = strings.Join(acts[:n-1], ", ") + " or " + label
+	}
+	return strings.ToUpper(label[:1]) + label[1:] + " " + it.Name
 }
 
 // SortHref links a column header: a second click reverses the order.
@@ -161,67 +206,37 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		c.Set(fiber.HeaderCacheControl, "no-store")
 		return c.Redirect().Status(fiber.StatusMovedPermanently).To(escapePath(urlPath + "/"))
 	}
+	if c.Request().URI().QueryArgs().Has("zip") {
+		return s.serveZip(c, urlPath, realPath, zipName(urlPath), s.rulesOf(userOf(c)))
+	}
 
-	entries, err := dir.ReadDir(-1)
+	items, err := s.folderItems(dir, urlPath, realPath, s.rulesOf(userOf(c)))
 	if err != nil {
 		return err
 	}
-	// Entries with a live lock file are still being uploaded.
-	locked := make(map[string]bool)
-	for _, e := range entries {
-		if target, ok := lockTarget(e.Name()); ok && s.locked(rootName(urlPath), target) {
-			locked[target] = true
-		}
-	}
-	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)), Crumbs: crumbs(urlPath)}
+	data := listing{page: s.page(c, "All files"), Path: urlPath, Action: escapePath(object(urlPath, true)),
+		Home: "/", Crumbs: crumbs("", urlPath), Items: items, Summary: summaryOf(items)}
 	create, replace, err := s.uploadRightsAt(c, object(urlPath, true), object(realPath, true))
 	if err != nil {
 		return err
 	}
-	data.Items = make([]listItem, 0, len(entries))
-	var (
-		dirs, files int
-		total       int64
-	)
-	for _, e := range entries {
-		if locked[e.Name()] {
-			continue
-		}
-		item, ok := s.listItem(urlPath, realPath, e)
-		if !ok {
-			continue
-		}
-		// Only what the visitor may open is listed.
-		if ok, err := s.mayAt(c, auth.ActRead, path.Join(urlPath, item.Name), item.real, item.IsDir); err != nil {
-			return err
-		} else if !ok {
-			continue
-		}
-		if item.CanDelete, err = s.mayAt(c, auth.ActDelete, path.Join(urlPath, item.Name), path.Join(realPath, item.Name), item.IsDir); err != nil {
+	for i := range data.Items {
+		item := &data.Items[i]
+		if item.CanDelete, err = s.mayAt(c, auth.ActDelete, item.Path, path.Join(realPath, item.Name), item.IsDir); err != nil {
 			return err
 		}
 		// Renaming creates an entry, so it needs the right to create here.
 		item.CanRename = item.CanDelete && create
-		data.Manage = data.Manage || item.CanDelete
-		data.Items = append(data.Items, item)
-		if item.IsDir {
-			dirs++
-		} else {
-			files++
-			total += item.size
+		// Links let others read it, so where it really lives counts too.
+		if item.CanShare, err = s.mayAt(c, auth.ActShare, item.Path, item.real, item.IsDir); err != nil {
+			return err
 		}
+		data.Manage = data.Manage || item.CanDelete || item.CanShare
 	}
-	data.Summary = summary(dirs, files, total)
-
-	switch c.Query("sort") {
-	case "size":
-		data.Sort = "size"
-	case "modified":
-		data.Sort = "modified"
-	default:
-		data.Sort = "name"
+	if data.ShareHere, err = s.mayAt(c, auth.ActShare, urlPath, realPath, true); err != nil {
+		return err
 	}
-	data.Desc = c.Query("order") == "desc"
+	data.Sort, data.Desc = sortOrder(c)
 	sortItems(data.Items, data.Sort, data.Desc)
 
 	if urlPath != "/" {
@@ -243,7 +258,7 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 		case renamed:
 			it.New, data.Renamed = true, it
 		case selected:
-			if it.CanDelete {
+			if it.CanDelete || it.CanShare {
 				it.Selected, data.Selected = true, it
 			}
 		}
@@ -254,6 +269,53 @@ func (s *Server) serveDir(c fiber.Ctx, dir *os.File, urlPath, realPath string, w
 	}
 	data.Mkdir = create
 	return s.render(c, fiber.StatusOK, "listing", data)
+}
+
+// folderItems lists the entries of the folder dir at urlPath, which really
+// lives at realPath, that allow lets the reader open. Entries being
+// uploaded are left out.
+func (s *Server) folderItems(dir *os.File, urlPath, realPath string, allow allowFunc) ([]listItem, error) {
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	// Entries with a live lock file are still being uploaded.
+	locked := make(map[string]bool)
+	for _, e := range entries {
+		if target, ok := lockTarget(e.Name()); ok && s.locked(rootName(urlPath), target) {
+			locked[target] = true
+		}
+	}
+	items := make([]listItem, 0, len(entries))
+	for _, e := range entries {
+		if locked[e.Name()] {
+			continue
+		}
+		item, ok := s.listItem(urlPath, realPath, e)
+		if !ok {
+			continue
+		}
+		// Only what the reader may open is listed.
+		if ok, err := mayBoth(allow, auth.ActRead, item.Path, item.real, item.IsDir); err != nil {
+			return nil, err
+		} else if !ok {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// sortOrder is the order a listing was asked for: a column and whether it
+// is reversed.
+func sortOrder(c fiber.Ctx) (string, bool) {
+	col := c.Query("sort")
+	switch col {
+	case "size", "modified":
+	default:
+		col = "name"
+	}
+	return col, c.Query("order") == "desc"
 }
 
 // sortItems puts directories first, then orders by col, then by name.
@@ -282,7 +344,24 @@ func sortItems(items []listItem, col string, desc bool) {
 	})
 }
 
-// summary describes a listing, e.g. "3 folders · 10 files · 56.9 MiB".
+// summaryOf describes a listing of items, e.g. "3 folders · 10 files ·
+// 56.9 MiB".
+func summaryOf(items []listItem) string {
+	var (
+		dirs, files int
+		total       int64
+	)
+	for _, it := range items {
+		if it.IsDir {
+			dirs++
+		} else {
+			files++
+			total += it.size
+		}
+	}
+	return summary(dirs, files, total)
+}
+
 func summary(dirs, files int, total int64) string {
 	var parts []string
 	if dirs > 0 {
@@ -304,10 +383,10 @@ func plural(n int, noun string) string {
 	return strconv.Itoa(n) + " " + noun + "s"
 }
 
-// crumbs links every directory on the way to urlPath.
-func crumbs(urlPath string) []crumb {
+// crumbs links every directory on the way to urlPath, below base.
+func crumbs(base, urlPath string) []crumb {
 	var out []crumb
-	p := ""
+	p := base
 	for _, name := range strings.Split(strings.Trim(urlPath, "/"), "/") {
 		if name == "" {
 			continue
@@ -351,6 +430,7 @@ func (s *Server) listItem(dirPath, realDir string, e fs.DirEntry) (listItem, boo
 	mod := info.ModTime().UTC()
 	item := listItem{
 		Name:    name,
+		Path:    path.Join(dirPath, name),
 		Key:     strings.ToLower(name),
 		Href:    escapePath(path.Join(dirPath, name)),
 		ModTime: mod.Format("Jan 2, 2006 15:04") + " UTC",

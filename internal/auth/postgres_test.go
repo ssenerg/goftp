@@ -303,3 +303,33 @@ func TestAdapterBatchAndUpdate(t *testing.T) {
 		}
 	}
 }
+
+// The limit on a user's links counts unexpired ones only.
+func TestPgShareLimit(t *testing.T) {
+	pool, _ := dbtest.Open(t)
+	st := auth.NewPgStore(pool)
+	ctx := context.Background()
+	id, err := st.CreateUser(ctx, "ann", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, expires_at)
+		SELECT sha256(i::text::bytea), '/f', false, $1, now() + CASE WHEN i < $2 THEN interval '1 hour' ELSE interval '-1 hour' END
+		FROM generate_series(1, $2 + 5) AS i`, id, auth.MaxShares); err != nil {
+		t.Fatal(err)
+	}
+	sh := &auth.Share{Path: "/f", CreatedBy: id, ExpiresAt: time.Now().Add(time.Hour)}
+	if err := st.CreateShare(ctx, tokenHash(), sh); err != nil || sh.ID == 0 || sh.CreatedAt.IsZero() {
+		t.Fatalf("last link: %+v %v", sh, err)
+	}
+	if err := st.CreateShare(ctx, tokenHash(), &auth.Share{Path: "/f", CreatedBy: id, ExpiresAt: time.Now().Add(time.Hour)}); !errors.Is(err, auth.ErrTooMany) {
+		t.Errorf("one link too many: %v", err)
+	}
+	if err := st.DeleteExpiredShares(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM shares").Scan(&n); err != nil || n != auth.MaxShares {
+		t.Errorf("%d links after purging, want %d: %v", n, auth.MaxShares, err)
+	}
+}

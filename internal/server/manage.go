@@ -328,11 +328,24 @@ func entryName(name string) bool {
 // a symlink grants nothing its target's rules do not, so realPath (where
 // symlinks lead, see resolve) has to allow it as well.
 func (s *Server) mayAt(c fiber.Ctx, act, urlPath, realPath string, dir bool) (bool, error) {
-	ok, err := s.allowed(c, object(urlPath, dir), act)
+	return mayBoth(s.rulesOf(userOf(c)), act, urlPath, realPath, dir)
+}
+
+// allowFunc reports whether act is allowed on obj.
+type allowFunc func(obj, act string) (bool, error)
+
+// rulesOf applies the rules for u, nil for anonymous visitors.
+func (s *Server) rulesOf(u *auth.User) allowFunc {
+	return func(obj, act string) (bool, error) { return s.auth.Allowed(u, obj, act) }
+}
+
+// mayBoth is mayAt for the rules of allow.
+func mayBoth(allow allowFunc, act, urlPath, realPath string, dir bool) (bool, error) {
+	ok, err := allow(object(urlPath, dir), act)
 	if err != nil || !ok || realPath == urlPath {
 		return ok, err
 	}
-	return s.allowed(c, object(realPath, dir), act)
+	return allow(object(realPath, dir), act)
 }
 
 // mayEither reports whether the visitor may perform act on urlPath as a

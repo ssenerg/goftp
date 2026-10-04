@@ -12,7 +12,7 @@ import (
 var (
 	ErrInvalidSubject = fmt.Errorf("subject must be a role (%s), %q or \"user:<name>\"", strings.Join(Roles, ", "), Anonymous)
 	ErrInvalidObject  = errors.New(`path must be a clean absolute URL path, optionally ending in "/*", e.g. "/docs/*"`)
-	ErrInvalidAction  = fmt.Errorf("action must be %s, %s, %s, %s or *", ActRead, ActWrite, ActOverwrite, ActDelete)
+	ErrInvalidAction  = fmt.Errorf("action must be %s or *", strings.Join(Actions, ", "))
 )
 
 // UserInfo is a user with their roles.
@@ -59,7 +59,9 @@ func (s *Service) user(ctx context.Context, username string) (*User, error) {
 	return u, err
 }
 
-// ResetPassword sets a new temporary password and ends the user's sessions.
+// ResetPassword sets a new temporary password and ends the user's sessions
+// and share links: if the account was taken over, nothing made with it
+// keeps working.
 func (s *Service) ResetPassword(ctx context.Context, username string) (string, error) {
 	u, err := s.user(ctx, username)
 	if err != nil {
@@ -160,7 +162,7 @@ func checkRule(sub, obj, act string) error {
 	} else if sub != Anonymous && !slices.Contains(Roles, sub) {
 		return ErrInvalidSubject
 	}
-	if !slices.Contains([]string{ActRead, ActWrite, ActOverwrite, ActDelete, "*"}, act) {
+	if act != "*" && !slices.Contains(Actions, act) {
 		return ErrInvalidAction
 	}
 	// keyMatch compares the text before "*" as a plain prefix, so "/pub*"

@@ -219,6 +219,17 @@
     font: inherit;
   }
   input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  select {
+    height: 42px;
+    padding: 0 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+  select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92em; }
   .pw { position: relative; display: block; }
   .pw input { padding-right: 64px; }
   .pw-toggle {
@@ -264,7 +275,7 @@
   .head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 16px; }
   .head h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; word-break: break-word; display: flex; align-items: center; gap: 10px; }
   .head .summary { margin-top: 4px; color: var(--muted); font-size: 14px; }
-  .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); letter-spacing: 0; }
+  .chip { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--border); color: var(--muted); letter-spacing: 0; white-space: nowrap; }
   .search { position: relative; width: 280px; max-width: 100%; }
   .search .i { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; }
   .search input { padding-left: 38px; padding-right: 36px; height: 40px; }
@@ -324,14 +335,83 @@
   .item-pop.up { top: auto; bottom: calc(100% - 6px); }
   .item-form { display: flex; flex-direction: column; gap: 10px; }
   .item-form[hidden] { display: none; }
-  .item-form + .item-form:not([hidden]) { border-top: 1px solid var(--border); padding-top: 14px; }
-  .item-form[data-kind="rename"][hidden] + .item-form { border-top: 0; padding-top: 0; }
+  .item-form:not([hidden]) ~ .item-form:not([hidden]) { border-top: 1px solid var(--border); padding-top: 14px; }
   .delete-note { color: var(--muted); font-size: 13px; }
+  .form-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .share-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 10px; }
+  .share-row select { height: 38px; width: 100%; }
+  .field .opt { font-weight: 400; color: var(--faint); }
+  .share-result { display: flex; flex-direction: column; gap: 10px; }
+  .share-result .form-title { color: var(--success); }
+  .share-url { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  .share-note { color: var(--muted); font-size: 13px; }
+  .share-here { position: relative; }
+  .share-here > summary { list-style: none; -webkit-tap-highlight-color: transparent; }
+  .share-here > summary::-webkit-details-marker { display: none; }
+  .share-here[open] > summary { background: var(--hover); }
+  .shared-by { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+  .shared-by strong { color: var(--text); font-weight: 600; }
+  .share-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 28px; margin-top: 6vh; text-align: center; }
+  .share-card h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+  .share-card .stack { width: 100%; max-width: 340px; margin-top: 8px; text-align: left; }
+  .share-card .btn.primary { margin-top: 8px; }
+  .share-icon { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 16px; background: var(--accent-soft); color: var(--accent); }
+  .share-icon .i { width: 28px; height: 28px; }
+  .share-card p.small { font-size: 13px; }
+  .link-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .link-cell a { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+  .link-cell .where { color: var(--faint); font-size: 12.5px; padding-left: 30px; overflow-wrap: anywhere; }
+  .link-cell .chip { display: inline-flex; align-items: center; gap: 4px; }
+  .link-cell .chip .i { width: 13px; height: 13px; }
+  .cell-label { display: none; }
   .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
   .btn.danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; filter: brightness(0.92); }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tabs a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: -1px;
+    border-bottom: 2px solid transparent;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .tabs a:hover { color: var(--text); }
+  .tabs a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .admin-form { padding: 18px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .admin-form h2 { font-size: 16px; }
+  .admin-form p { font-size: 13.5px; }
+  .inline-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+  .inline-form .field { flex: 1 1 180px; }
+  .inline-form .btn { height: 42px; }
+  .list-table td { font-size: 14px; }
+  .list-table td.act { width: auto; white-space: nowrap; }
+  .who-cell { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 500; }
+  .who-cell .avatar { width: 28px; height: 28px; font-size: 12.5px; }
+  .chip.warn { background: var(--danger-soft); border-color: transparent; color: var(--danger); }
+  .role-form { display: flex; align-items: center; gap: 8px; }
+  .role-form select { height: 32px; font-size: 13.5px; }
+  .confirm { position: relative; display: inline-block; }
+  .confirm > summary { list-style: none; cursor: pointer; }
+  .confirm > summary::-webkit-details-marker { display: none; }
+  .confirm[open] > summary { background: var(--hover); color: var(--text); }
+  .confirm .popover { white-space: normal; text-align: left; font-size: 13.5px; }
+  .onetime > div { display: flex; flex-direction: column; gap: 8px; }
+  .copyable { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .copyable code {
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+    user-select: all;
+  }
+  .onetime-note { font-size: 13px; opacity: 0.85; }
   .manage { display: flex; flex-direction: column; gap: 14px; max-width: 420px; padding: 18px; margin-bottom: 16px; }
   .manage h2 { display: flex; align-items: center; gap: 10px; font-size: 16px; overflow-wrap: anywhere; }
-  .manage .item-form + .item-form:not([hidden]) { border-top: 1px solid var(--border); padding-top: 14px; }
 
   .upload { margin-bottom: 16px; }
   .dropzone {
@@ -466,6 +546,17 @@
   }
   @media (max-width: 720px) {
     .files .date { display: none; }
+    /* Each user or rule becomes a block: who on top, the rest below. */
+    .list-table thead { display: none; }
+    .list-table tbody tr { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    .list-table tbody tr:last-child { border-bottom: 0; }
+    .list-table tbody tr:hover { background: var(--hover); }
+    .list-table tbody tr:hover td { background: none; }
+    .files.list-table td { display: block; width: auto; height: auto; padding: 0; border: 0; }
+    .files.list-table td.date { display: none; }
+    .list-table td.name { flex: 1 1 100%; }
+    .list-table td.act { margin-left: auto; }
+    .cell-label { display: inline; color: var(--faint); }
   }
   @media (max-width: 560px) {
     .topbar { height: 56px; padding: 0 14px; }
@@ -485,12 +576,16 @@
 
 {{define "topbar"}}
 <header class="topbar">
-  <a class="brand" href="/"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
-  {{if .User}}
+  <a class="brand" href="{{with .Share}}{{.Root}}{{else}}/{{end}}"><svg class="logo" aria-hidden="true"><use href="#i-logo"/></svg>goftp</a>
+  {{if .Shared}}
+  {{with .Share}}<span class="shared-by"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg><span>Shared by <strong>{{.By}}</strong></span></span>{{end}}
+  {{else if .User}}
   <details class="menu">
     <summary aria-label="Account menu"><span class="avatar" aria-hidden="true">{{initial .User}}</span><span class="who">{{.User}}</span>{{with .Role}}<span class="badge">{{.}}</span>{{end}}<svg class="i chev" aria-hidden="true"><use href="#i-chevron"/></svg></summary>
     <div class="menu-panel">
       <div class="menu-head">Signed in as <strong>{{.User}}</strong>{{with .Role}}<span class="role">{{.}}</span>{{end}}</div>
+      {{if .Shares}}<a href="/.shares/"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Shared links</a>{{end}}
+      {{if .Admin}}<a href="/.admin/users"><svg class="i" aria-hidden="true"><use href="#i-users"/></svg>Users and rules</a>{{end}}
       <a href="/.auth/password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg>Change password</a>
       <form method="post" action="/.auth/logout"><button type="submit"><svg class="i" aria-hidden="true"><use href="#i-logout"/></svg>Sign out</button></form>
     </div>
@@ -516,6 +611,8 @@
   <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5m0 3.5h.01"/></symbol>
   <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M15.5 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a6.5 6.5 0 0 1 3.5 5.8"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
   <symbol id="i-more" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/></g></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M10 7V5h4v2m-7.5 0 .8 12a2 2 0 0 0 2 1.9h5.4a2 2 0 0 0 2-1.9l.8-12M10.2 11v5.5m3.6-5.5v5.5"/></symbol>
   <symbol id="i-folder-plus" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h3.6l2 2.2h7.4A2.5 2.5 0 0 1 21 9.7v7.8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/><path d="M12 10.8v5.4M9.3 13.5h5.4"/></symbol>
@@ -530,5 +627,8 @@
   <symbol id="i-audio" viewBox="0 0 24 24"><path d="M9 18V5.5l11-2V16"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></symbol>
   <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.5"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4"/></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="m15.5 17 5-5-5-5m-7 0-5 5 5 5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3.2-3.2a4.5 4.5 0 0 0-6.4-6.4l-1.1 1.1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3.2 3.2a4.5 4.5 0 0 0 6.4 6.4l1.1-1.1"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="4.5" y="10.5" width="15" height="10.5" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v12m-5-5 5 5 5-5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></symbol>
 </svg>
 {{end}}
