@@ -12,7 +12,11 @@ const (
 	ActWrite     = "write"     // upload new files, create folders
 	ActOverwrite = "overwrite" // replace existing files
 	ActDelete    = "delete"    // delete and rename files and folders
+	ActShare     = "share"     // create links for people without an account
 )
+
+// Actions are the actions rules may allow, besides "*" for all of them.
+var Actions = []string{ActRead, ActWrite, ActOverwrite, ActDelete, ActShare}
 
 // Anonymous is the subject for requests without a session.
 const Anonymous = "anonymous"
@@ -46,6 +50,7 @@ var DefaultPolicies = [][]string{
 	{"p", "operator", "/*", ActWrite},
 	{"p", "admin", "/*", ActOverwrite},
 	{"p", "admin", "/*", ActDelete},
+	{"p", "admin", "/*", ActShare},
 	{"p", "superadmin", "/*", "*"},
 	{"g", "operator", "user"},
 	{"g", "admin", "operator"},

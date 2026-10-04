@@ -219,7 +219,7 @@ func TestPolicyAdministration(t *testing.T) {
 				t.Errorf("AddPolicy(%q) accepted", rule)
 			}
 		}
-		for _, rule := range [][3]string{{"anonymous", "/pub/*", "read"}, {"user:bob", "/bob/", "*"}, {"operator", "/", "write"}, {"admin", "/a.txt", "overwrite"}} {
+		for _, rule := range [][3]string{{"anonymous", "/pub/*", "read"}, {"user:bob", "/bob/", "*"}, {"operator", "/", "write"}, {"admin", "/a.txt", "overwrite"}, {"user:bob", "/bob/*", "share"}} {
 			if ok, err := svc.AddPolicy(rule[0], rule[1], rule[2]); !ok || err != nil {
 				t.Errorf("AddPolicy(%q) = %v, %v", rule, ok, err)
 			}

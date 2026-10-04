@@ -19,6 +19,7 @@ const (
 	logStateKey ctxKey = iota
 	bodyDoneKey
 	sessionKey
+	shareKey
 )
 
 type logState struct {
@@ -74,7 +75,7 @@ func newAccess(c fiber.Ctx, start time.Time) access {
 	return access{
 		ip:     strings.Clone(c.IP()),
 		method: string(c.Request().Header.Method()),
-		path:   strings.Clone(c.Path()),
+		path:   logPath(strings.Clone(c.Path())),
 		status: c.Response().StatusCode(),
 		start:  start,
 	}
@@ -136,7 +137,7 @@ func (s *Server) sendError(c fiber.Ctx, err error, detail string) error {
 	if errors.As(err, &fe) {
 		code = fe.Code
 	} else {
-		s.log.Error("request failed", zap.String("path", c.Path()), zap.Error(err))
+		s.log.Error("request failed", zap.String("path", logPath(c.Path())), zap.Error(err))
 	}
 	if code == fiber.StatusMethodNotAllowed {
 		c.Set(fiber.HeaderAllow, allowedMethods)
@@ -193,6 +194,16 @@ func (s *Server) errorPage(c fiber.Ctx, code int, detail string) errorPage {
 	if p.Message == "" {
 		p.Message = "Something went wrong. Try again later."
 	}
+	if strings.HasPrefix(c.Path(), sharePrefix) {
+		// Visitors of links get the way back to what the link leads to, if
+		// it works, and nothing of the visitor's account.
+		view, _ := c.Locals(shareKey).(*shareView)
+		p.page = s.sharePage(c, view, p.Title)
+		if view == nil && detail != "" {
+			p.Message, p.Detail = detail, ""
+		}
+		return p
+	}
 	// Offer the way back to the folder of the failed request.
 	if urlPath, _, err := cleanPath(c.Path()); err == nil && urlPath != "/" && !hidden(urlPath) {
 		if c.Method() != fiber.MethodPost {
@@ -204,7 +215,7 @@ func (s *Server) errorPage(c fiber.Ctx, code int, detail string) errorPage {
 }
 
 func (s *Server) logPanic(c fiber.Ctx, e any) {
-	s.log.Error("panic", zap.Any("panic", e), zap.String("path", c.Path()), zap.Stack("stack"))
+	s.log.Error("panic", zap.Any("panic", e), zap.String("path", logPath(c.Path())), zap.Stack("stack"))
 }
 
 // clientKey groups IPv6 clients by /64, since a single host usually owns

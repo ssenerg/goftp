@@ -42,7 +42,7 @@
   </section>
 
   <div class="card">
-    <table class="files admin-table">
+    <table class="files list-table">
       <thead><tr><th>User</th><th>Role</th><th class="date">Added</th><th class="act"><span class="vh">Actions</span></th></tr></thead>
       <tbody>
         {{range .Users}}
@@ -64,7 +64,7 @@
               <summary class="icon-btn" aria-label="Reset the password of {{.Name}}" title="New temporary password"><svg class="i" aria-hidden="true"><use href="#i-key"/></svg></summary>
               <form method="post" action="/.admin/users" class="popover">
                 <input type="hidden" name="action" value="password"><input type="hidden" name="user" value="{{.Name}}">
-                <p>Give <strong>{{.Name}}</strong> a new temporary password? This signs them out everywhere.</p>
+                <p>Give <strong>{{.Name}}</strong> a new temporary password? This signs them out everywhere and ends their share links.</p>
                 <div class="popover-actions"><button type="submit" class="btn primary small">New password</button></div>
               </form>
             </details>
@@ -105,7 +105,7 @@
   </section>
 
   <div class="card">
-    <table class="files admin-table">
+    <table class="files list-table">
       <thead><tr><th>Who</th><th>Path</th><th>May</th><th class="act"><span class="vh">Remove</span></th></tr></thead>
       <tbody>
         {{range .Rules}}

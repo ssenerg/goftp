@@ -1,0 +1,66 @@
+{{define "shares"}}{{template "head" .}}
+<body>
+{{template "topbar" .}}
+<main class="container">
+  <div class="head">
+    <div>
+      <h1>Shared links</h1>
+      <p class="summary">{{if .All}}Everyone's links that still work. As a superadmin, you can revoke any of them.{{else}}Your links that still work.{{end}}</p>
+    </div>
+  </div>
+
+  {{with .Created}}
+  <div class="alert success banner onetime" role="status">
+    <svg class="i" aria-hidden="true"><use href="#i-check"/></svg>
+    <div>
+      <p>Anyone with this link{{if .Password}} and its password{{end}} can open <strong>{{.Name}}</strong> until <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>:</p>
+      <p class="copyable"><code id="share-link">{{.URL}}</code><button type="button" class="btn small" data-copy="share-link" hidden><svg class="i" aria-hidden="true"><use href="#i-copy"/></svg>Copy</button></p>
+      <p class="onetime-note">Copy it now: it is shown only here, once.</p>
+    </div>
+  </div>
+  {{end}}
+  {{with .Notice}}<div class="alert success banner" role="status"><svg class="i" aria-hidden="true"><use href="#i-check"/></svg><span>{{.}}</span></div>{{end}}
+  {{with .Error}}<div class="alert error banner" role="alert"><svg class="i" aria-hidden="true"><use href="#i-alert"/></svg><span>{{.}}</span></div>{{end}}
+
+  <div class="card">
+    {{if .Links}}
+    <table class="files list-table">
+      <thead><tr><th>Link to</th>{{if .All}}<th>By</th>{{end}}<th>Expires</th><th class="act"><span class="vh">Revoke</span></th></tr></thead>
+      <tbody>
+        {{range .Links}}
+        <tr>
+          <td class="name"><span class="link-cell">
+            <a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span>{{if .Password}}<span class="chip" title="Visitors need a password"><svg class="i" aria-hidden="true"><use href="#i-lock"/></svg>password</span>{{end}}</a>
+            <span class="where">{{.Path}}</span>
+          </span></td>
+          {{if $.All}}<td><span class="cell-label">By </span>{{.By}}</td>{{end}}
+          <td><span class="cell-label">Expires </span><time datetime="{{.ExpiresISO}}">{{.Expires}}</time></td>
+          <td class="act">
+            <details class="confirm">
+              <summary class="icon-btn" aria-label="Revoke the link to {{.Name}}" title="Revoke"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg></summary>
+              <form method="post" action="/.shares/" class="popover">
+                <input type="hidden" name="action" value="revoke"><input type="hidden" name="id" value="{{.ID}}">
+                <p>Revoke this link to <strong>{{.Name}}</strong>? It stops working at once.</p>
+                <div class="popover-actions"><button type="submit" class="btn danger small">Revoke</button></div>
+              </form>
+            </details>
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <div class="empty">
+      <svg class="i" aria-hidden="true"><use href="#i-link"/></svg>
+      <p>No links are active.</p>
+      <p>To share a file or folder, open its ⋯ menu, or Share in the folder, and create a link.</p>
+    </div>
+    {{end}}
+  </div>
+</main>
+{{template "footer" .}}
+{{template "icons"}}
+{{script}}
+</body>
+</html>
+{{end}}

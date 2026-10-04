@@ -205,7 +205,7 @@ func (s *Server) logAdmin(c fiber.Ctx, msg string, fields ...zap.Field) {
 func (s *Server) renderAdmin(c fiber.Ctx, status int, tab, notice, failure string, shown *secret) error {
 	data := adminPage{
 		page: s.page(c, "Administration"), Tab: tab, Roles: auth.Roles,
-		Actions: []string{auth.ActRead, auth.ActWrite, auth.ActOverwrite, auth.ActDelete, "*"},
+		Actions: append(slices.Clone(auth.Actions), "*"),
 		Notice:  notice, Error: failure, Secret: shown,
 	}
 	ctx, cancel := dbContext(c)

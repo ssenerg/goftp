@@ -3,7 +3,7 @@
 {{template "topbar" .}}
 <main class="container">
   <nav class="crumbs" aria-label="Folder path">
-    <a href="/"{{if not .Crumbs}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span hidden>Home</span></a>
+    <a href="{{.Home}}"{{if not .Crumbs}} aria-current="page"{{end}}><svg class="i" aria-hidden="true"><use href="#i-home"/></svg><span hidden>Home</span></a>
     {{- range .Crumbs}}
     <span class="sep" aria-hidden="true">/</span><a href="{{.Href}}"{{if .Current}} aria-current="page"{{end}}>{{.Name}}</a>
     {{- end}}
@@ -25,7 +25,7 @@
   <div class="head">
     <div>
       <h1>{{.Title}}{{if and .User (not .Upload)}} <span class="chip">View only</span>{{end}}</h1>
-      <p class="summary">{{.Summary}}</p>
+      <p class="summary">{{.Summary}}{{with .Share}} · Link expires <time datetime="{{.ExpiresISO}}">{{.Expires}}</time>{{end}}</p>
     </div>
     <div class="tools">
       {{if .Items}}
@@ -37,6 +37,15 @@
       {{end}}
       {{if .Items}}
       <a class="btn" href="?zip" download><svg class="i" aria-hidden="true"><use href="#i-archive"/></svg>Download zip</a>
+      {{end}}
+      {{if .ShareHere}}
+      <details class="share-here">
+        <summary class="btn"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share</summary>
+        <form method="post" action="/.shares/" class="popover share-form" data-name="{{.Title}}">
+          <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
+          {{template "share-fields"}}
+        </form>
+      </details>
       {{end}}
       {{if .Mkdir}}
       <details class="newfolder">
@@ -103,7 +112,7 @@
           <td class="name"><a href="{{.Href}}"><svg class="i kind k-{{.Kind}}" aria-hidden="true"><use href="#i-{{.Kind}}"/></svg><span>{{.Name}}</span></a></td>
           <td class="num">{{.Size}}</td>
           <td class="date"><time datetime="{{.ModISO}}">{{.ModTime}}</time></td>
-          {{if $.Manage}}<td class="act">{{if .CanDelete}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" aria-label="{{if .CanRename}}Rename or delete{{else}}Delete{{end}} {{.Name}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
+          {{if $.Manage}}<td class="act">{{if or .CanDelete .CanShare}}<a class="icon-btn" href="?item={{.Name}}" data-item="{{.Name}}" data-path="{{.Path}}" data-dir="{{.IsDir}}" data-rename="{{.CanRename}}" data-share="{{.CanShare}}" data-delete="{{.CanDelete}}" aria-label="{{.ActionsLabel}}" aria-haspopup="dialog" aria-expanded="false"><svg class="i" aria-hidden="true"><use href="#i-more"/></svg></a>{{end}}</td>{{end}}
         </tr>
         {{end}}
       </tbody>
@@ -136,10 +145,28 @@
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn primary small">Rename</button></div>
 </form>
+<form method="post" action="/.shares/" class="item-form share-form" data-kind="share"{{if not .CanShare}} hidden{{end}}>
+  <input type="hidden" name="action" value="create"><input type="hidden" name="path" value="{{.Path}}">
+  {{template "share-fields"}}
+</form>
 <form method="post" action="{{.Action}}" class="item-form" data-kind="delete"{{if not .CanDelete}} hidden{{end}}>
   <input type="hidden" name="delete" value="{{.Name}}">
   <p class="delete-note">{{if .IsDir}}Delete this folder and everything in it?{{else}}Delete this file?{{end}} This cannot be undone.</p>
   <p class="popover-error" role="alert" hidden></p>
   <div class="popover-actions"><button type="submit" class="btn danger small"><svg class="i" aria-hidden="true"><use href="#i-trash"/></svg>Delete</button></div>
 </form>
+{{end}}
+
+{{define "share-fields"}}
+<p class="form-title"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Share a link</p>
+<div class="share-row">
+  <label class="field"><span>Expires in</span>
+    <select name="expires">{{range expiryOptions}}<option value="{{.Value}}"{{if .Default}} selected{{end}}>{{.Label}}</option>{{end}}</select>
+  </label>
+  <label class="field"><span>Password <span class="opt">(optional)</span></span>
+    <input type="password" name="password" minlength="8" maxlength="256" autocomplete="new-password" placeholder="None">
+  </label>
+</div>
+<p class="popover-error" role="alert" hidden></p>
+<div class="popover-actions"><button type="submit" class="btn primary small"><svg class="i" aria-hidden="true"><use href="#i-link"/></svg>Create link</button></div>
 {{end}}

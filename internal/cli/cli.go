@@ -104,7 +104,7 @@ func serve(ctx context.Context, cfg *config.Config) error {
 	background, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() { auth.WatchPolicies(background, pool, enforcer, log) })
-	wg.Go(func() { svc.PurgeSessions(background, time.Hour, log) })
+	wg.Go(func() { svc.PurgeExpired(background, time.Hour, log) })
 	defer func() {
 		cancel()
 		wg.Wait()
@@ -288,7 +288,8 @@ func policyCmd() *cobra.Command {
 		Long: "Access rules allow a subject to perform an action on URL paths.\n\n" +
 			"Subjects: a role (" + strings.Join(auth.Roles, ", ") + "), " + auth.Anonymous + " or user:NAME.\n" +
 			"Actions:  " + auth.ActRead + " (list, download), " + auth.ActWrite + " (upload new files, create folders), " +
-			auth.ActOverwrite + " (replace files), " + auth.ActDelete + " (delete, rename) or *.\n" +
+			auth.ActOverwrite + " (replace files), " + auth.ActDelete + " (delete, rename),\n" +
+			"          " + auth.ActShare + " (create links for people without an account) or *.\n" +
 			"Paths:    \"/docs/*\" covers /docs/ and everything below it; \"/docs/\" is just the listing.\n\n" +
 			"Roles inherit the rules of the roles below them: " + strings.Join(auth.Roles, " > ") + ".",
 		Args: cobra.NoArgs,

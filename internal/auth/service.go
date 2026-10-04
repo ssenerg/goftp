@@ -139,13 +139,19 @@ func (s *Service) Login(ctx context.Context, username, password string) (*Sessio
 }
 
 func (s *Service) newSession(ctx context.Context, u *User) (*Session, error) {
-	b := make([]byte, 32)
-	_, _ = rand.Read(b)
-	sess := &Session{Token: base64.RawURLEncoding.EncodeToString(b), Expires: time.Now().Add(s.ttl), User: u}
+	sess := &Session{Token: newToken(), Expires: time.Now().Add(s.ttl), User: u}
 	if err := s.store.CreateSession(ctx, tokenHash(sess.Token), u, sess.Expires); err != nil {
 		return nil, err
 	}
 	return sess, nil
+}
+
+// newToken returns a random session or link token: 43 characters for 256
+// bits.
+func newToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 func tokenHash(token string) []byte {
@@ -221,13 +227,17 @@ func (s *Service) Role(username string) string {
 	return strings.Join(roles, ",")
 }
 
-// PurgeSessions deletes expired sessions periodically until ctx ends.
-func (s *Service) PurgeSessions(ctx context.Context, every time.Duration, log *zap.Logger) {
+// PurgeExpired deletes expired sessions and share links periodically until
+// ctx ends.
+func (s *Service) PurgeExpired(ctx context.Context, every time.Duration, log *zap.Logger) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
 		if err := s.store.DeleteExpiredSessions(ctx); err != nil && ctx.Err() == nil {
 			log.Warn("purge sessions", zap.Error(err))
+		}
+		if err := s.store.DeleteExpiredShares(ctx); err != nil && ctx.Err() == nil {
+			log.Warn("purge share links", zap.Error(err))
 		}
 		select {
 		case <-ctx.Done():

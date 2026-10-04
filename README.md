@@ -60,12 +60,12 @@ New and reset passwords are temporary: after signing in, users can do
 nothing but choose their own password (at least 12 characters), which ends
 all their other sessions.
 
-| Role         | May                                                           |
-|--------------|---------------------------------------------------------------|
-| `user`       | list directories and download (`read`)                        |
-| `operator`   | also upload new files and create folders (`write`)            |
-| `admin`      | also replace, delete and rename files (`overwrite`, `delete`) |
-| `superadmin` | every action (`*`)                                            |
+| Role         | May                                                                                     |
+|--------------|-----------------------------------------------------------------------------------------|
+| `user`       | list directories and download (`read`)                                                  |
+| `operator`   | also upload new files and create folders (`write`)                                      |
+| `admin`      | also replace, delete and rename files, and share links (`overwrite`, `delete`, `share`) |
+| `superadmin` | every action (`*`)                                                                      |
 
 These are Casbin rules on URL paths, kept in the `casbin_rule` table and
 editable while the server runs, on the **Rules** tab or with `goftp policy`
@@ -167,6 +167,31 @@ the entry and `write` for the new name. Admins have `delete`; on upgrade,
 it is added only if the admin rule is still the default one. To let others
 delete, e.g. `goftp policy add operator '/*' delete`.
 
+## Share links
+
+A link lets people without an account open a file or a folder, until it
+expires after an hour, a day, 7 days or 30 days. Create one from Share in
+a folder, or from the ⋯ menu of a file or folder; a link can also need a
+password (at least 8 characters). The link is shown once: only a hash of
+it is stored. Visitors of a folder's link can browse it, download its
+files and download it as a zip.
+
+A link never gives more than its creator may still read and share: it
+stops working when they lose those rights, or when what it leads to is
+moved or deleted. **Shared links** in the menu lists your links, and for
+superadmins everyone's, to revoke them. Deleting a user, or giving them a
+new temporary password, ends their links too. Scripts:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" -d action=create -d path=/docs/report.pdf -d expires=7d https://host/.shares/
+# {"id":1,"url":"https://host/.share/...","expires_at":"..."}
+curl -H "Authorization: Bearer $TOKEN" -d action=revoke -d id=1 https://host/.shares/
+```
+
+Creating links needs the `share` action on what is shared. Admins have
+it; on upgrade, it is added only if the admin rule is still the default
+one. To let others share, e.g. `goftp policy add user:bob '/bob/*' share`.
+
 ## Security notes
 
 - Serve over HTTPS: passwords and session tokens travel with every sign-in
@@ -189,6 +214,11 @@ delete, e.g. `goftp policy add operator '/*' delete`.
 - Symlinks are followed only when they use relative targets that stay inside
   the served directory, do not lead into a dotfile or dot-directory, and
   lead where the visitor may go anyway.
+- Share links carry 256-bit tokens, which are kept out of the logs. Link
+  passwords are hashed with Argon2id; wrong ones count against the
+  client's sign-in budget, and each link takes at most 20 password checks
+  a minute. The cookie that remembers a password lasts at most
+  `auth.session_ttl`.
 
 ## Troubleshooting
 

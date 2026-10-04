@@ -15,9 +15,20 @@
     return i ? `${n.toFixed(1)} ${units[i]}` : `${n} B`;
   };
 
+  const icon = id => {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "i");
+    svg.setAttribute("aria-hidden", "true");
+    const use = document.createElementNS(ns, "use");
+    use.setAttribute("href", "#i-" + id);
+    svg.append(use);
+    return svg;
+  };
+
   // Confirmations are shown once, not again on reload.
   const params = new URLSearchParams(location.search);
-  const shown = ["uploaded", "created", "renamed", "deleted"].filter(p => params.has(p));
+  const shown = ["uploaded", "created", "renamed", "deleted", "done"].filter(p => params.has(p));
   if (shown.length) {
     for (const p of shown) params.delete(p);
     history.replaceState(null, "", location.pathname + (params.size ? "?" + params : ""));
@@ -110,7 +121,107 @@
     });
   }
 
-  // Rename and delete: a popover for each entry, made from a template.
+  // Share links: the form asks for a link, which is shown once, with a
+  // button to copy it.
+  const shareFailed = {
+    0: "The connection was lost. Try again.",
+    400: "Give the link a password of at least 8 characters, or none.",
+    401: "You were signed out. Sign in and try again.",
+    403: "You may not share this.",
+    404: "It is no longer here. Reload the page.",
+    409: "You have too many links. Revoke some under Shared links first.",
+    503: "The server is busy. Try again in a moment.",
+  };
+  const shareForm = (form, name) => {
+    const error = $(".popover-error", form);
+    const submit = $("button[type=submit]", form);
+    form.addEventListener("submit", async e => {
+      e.preventDefault();
+      submit.disabled = true;
+      let status = 0;
+      let link = null;
+      try {
+        // Not form.action: the form's field named "action" hides it.
+        const resp = await fetch(form.getAttribute("action"), {
+          method: "POST",
+          body: new URLSearchParams(new FormData(form)),
+          headers: { Accept: "application/json" },
+        });
+        status = resp.status;
+        if (status === 201) link = await resp.json();
+      } catch {
+        link = null;
+      }
+      submit.disabled = false;
+      if (!link) {
+        error.textContent = shareFailed[status] || `The link could not be created (error ${status}).`;
+        error.hidden = false;
+        return;
+      }
+      const password = form.elements.password.value !== "";
+      const title = document.createElement("p");
+      title.className = "form-title";
+      title.append(icon("check"), "Link created");
+      const url = document.createElement("input");
+      url.className = "share-url";
+      url.readOnly = true;
+      url.value = link.url;
+      url.setAttribute("aria-label", "The link");
+      url.addEventListener("focus", () => url.select());
+      const note = document.createElement("p");
+      note.className = "share-note";
+      note.textContent = `Anyone with it${password ? " and the password" : ""} can open “${name}” until ` +
+        `${when.format(new Date(link.expires_at))}. Copy it now: it is shown only this once.`;
+      const result = document.createElement("div");
+      result.className = "share-result";
+      result.append(title, url);
+      if (navigator.clipboard) {
+        const copy = document.createElement("button");
+        copy.type = "button";
+        copy.className = "btn primary small";
+        const label = document.createElement("span");
+        label.textContent = "Copy link";
+        copy.append(icon("copy"), label);
+        copy.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(link.url);
+            label.textContent = "Copied";
+          } catch {
+            url.select();
+            label.textContent = "Select and copy";
+          }
+        });
+        const actions = document.createElement("div");
+        actions.className = "popover-actions";
+        actions.append(copy);
+        result.append(actions);
+      }
+      result.append(note);
+      form.replaceChildren(result);
+      url.focus();
+    });
+  };
+
+  // Sharing the folder itself: a popover in the header.
+  for (const box of $$(".share-here")) {
+    const form = $("form", box);
+    shareForm(form, form.dataset.name);
+    box.addEventListener("toggle", () => {
+      if (box.open && form.elements.expires) form.elements.expires.focus();
+    });
+    box.addEventListener("keydown", e => {
+      if (e.key === "Escape" && box.open) {
+        box.open = false;
+        $("summary", box).focus();
+      }
+    });
+    document.addEventListener("click", e => {
+      if (box.open && !box.contains(e.target)) box.open = false;
+    });
+  }
+
+  // Rename, share and delete: a popover for each entry, made from a
+  // template.
   const itemForms = $("#item-actions");
   if (itemForms) {
     const failed = {
@@ -148,9 +259,14 @@
       pop.append(itemForms.content.cloneNode(true));
       for (const form of $$("form", pop)) {
         const kind = form.dataset.kind;
+        form.hidden = link.dataset[kind] !== "true";
+        if (kind === "share") {
+          form.elements.path.value = link.dataset.path;
+          shareForm(form, name);
+          continue;
+        }
         const error = $(".popover-error", form);
         const submit = $("button[type=submit]", form);
-        form.hidden = kind === "rename" && link.dataset.rename !== "true";
         form.elements[kind].value = name;
         form.addEventListener("submit", async e => {
           e.preventDefault();
@@ -196,6 +312,8 @@
         // The name without its extension, ready to be typed over.
         const dot = isDir ? -1 : name.lastIndexOf(".");
         to.setSelectionRange(0, dot > 0 ? dot : name.length);
+      } else if (link.dataset.share === "true") {
+        $("form[data-kind=share] select", pop).focus();
       } else {
         $("form[data-kind=delete] button", pop).focus();
       }
@@ -301,17 +419,6 @@
   let active = 0;
   let failed = 0;
   let done = 0;
-
-  const icon = id => {
-    const ns = "http://www.w3.org/2000/svg";
-    const svg = document.createElementNS(ns, "svg");
-    svg.setAttribute("class", "i");
-    svg.setAttribute("aria-hidden", "true");
-    const use = document.createElementNS(ns, "use");
-    use.setAttribute("href", "#i-" + id);
-    svg.append(use);
-    return svg;
-  };
 
   const heading = () => {
     let h = $("h2", panel);

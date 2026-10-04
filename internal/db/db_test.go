@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestConcurrentMigrations(t *testing.T) {
 	if err := pools[0].QueryRow(ctx, "SELECT count(*) FROM casbin_rule").Scan(&rules); err != nil {
 		t.Fatal(err)
 	}
-	if versions != 2 || rules != 8 {
+	if versions != 3 || rules != 9 {
 		t.Errorf("%d migrations recorded, %d rules seeded", versions, rules)
 	}
 }
@@ -69,37 +70,50 @@ func TestOpenErrors(t *testing.T) {
 	}
 }
 
-// Admins get the delete action where their rule is still the default one.
-func TestDeleteMigration(t *testing.T) {
-	pool, _ := dbtest.Open(t)
-	ctx := context.Background()
-	adminDeletes := func() bool {
-		var n int
-		if err := pool.QueryRow(ctx, "SELECT count(*) FROM casbin_rule WHERE ptype = 'p' AND v0 = 'admin' AND v2 = 'delete'").Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n == 1
-	}
-	rerun := func(sql string) {
-		t.Helper()
-		for _, stmt := range []string{sql, "DELETE FROM casbin_rule WHERE v2 = 'delete'", "DELETE FROM schema_migrations WHERE version = 2"} {
-			if _, err := pool.Exec(ctx, stmt); err != nil {
-				t.Fatal(err)
+// Admins get the actions added since the first release where their rules
+// are still the default ones.
+func TestActionMigrations(t *testing.T) {
+	for _, m := range []struct {
+		version int
+		action  string
+		undo    string // undoes the rest of the migration, so it can run again
+	}{
+		{2, "delete", "SELECT 1"},
+		{3, "share", "DROP TABLE shares"},
+	} {
+		t.Run(m.action, func(t *testing.T) {
+			pool, _ := dbtest.Open(t)
+			ctx := context.Background()
+			adminMay := func() bool {
+				var n int
+				if err := pool.QueryRow(ctx, "SELECT count(*) FROM casbin_rule WHERE ptype = 'p' AND v0 = 'admin' AND v2 = $1", m.action).Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				return n == 1
 			}
-		}
-		if err := db.Migrate(ctx, pool); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if !adminDeletes() {
-		t.Fatal("new installs: admins may not delete")
-	}
-	rerun("SELECT 1")
-	if !adminDeletes() {
-		t.Error("default rules: admins may not delete")
-	}
-	rerun("DELETE FROM casbin_rule WHERE v0 = 'admin' AND v2 = 'overwrite'")
-	if adminDeletes() {
-		t.Error("changed rules: admins were given delete")
+			rerun := func(sql string) {
+				t.Helper()
+				for _, stmt := range []string{sql, m.undo, "DELETE FROM casbin_rule WHERE v2 = '" + m.action + "'",
+					"DELETE FROM schema_migrations WHERE version = " + strconv.Itoa(m.version)} {
+					if _, err := pool.Exec(ctx, stmt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := db.Migrate(ctx, pool); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !adminMay() {
+				t.Fatalf("new installs: admins may not %s", m.action)
+			}
+			rerun("SELECT 1")
+			if !adminMay() {
+				t.Errorf("default rules: admins may not %s", m.action)
+			}
+			rerun("DELETE FROM casbin_rule WHERE v0 = 'admin' AND v2 = 'overwrite'")
+			if adminMay() {
+				t.Errorf("changed rules: admins were given %s", m.action)
+			}
+		})
 	}
 }

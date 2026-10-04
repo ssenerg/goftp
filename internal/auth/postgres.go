@@ -73,7 +73,10 @@ func (s *PgStore) SetPassword(ctx context.Context, userID int64, passwordHash st
 		if tag.RowsAffected() == 0 {
 			return ErrNotFound
 		}
-		_, err = tx.Exec(ctx, "DELETE FROM sessions WHERE user_id = $1", userID)
+		if _, err = tx.Exec(ctx, "DELETE FROM sessions WHERE user_id = $1", userID); err != nil || !mustChange {
+			return err
+		}
+		_, err = tx.Exec(ctx, "DELETE FROM shares WHERE created_by = $1", userID)
 		return err
 	})
 }
@@ -123,6 +126,75 @@ func (s *PgStore) DeleteSession(ctx context.Context, tokenHash []byte) error {
 
 func (s *PgStore) DeleteExpiredSessions(ctx context.Context) error {
 	_, err := s.db.Exec(ctx, "DELETE FROM sessions WHERE expires_at <= now()")
+	return err
+}
+
+const shareColumns = "s.id, s.path, s.is_dir, s.password_hash, s.created_by, u.username, s.created_at, s.expires_at"
+
+func scanShare(row pgx.Row) (*Share, error) {
+	var sh Share
+	err := row.Scan(&sh.ID, &sh.Path, &sh.IsDir, &sh.PasswordHash, &sh.CreatedBy, &sh.Creator, &sh.CreatedAt, &sh.ExpiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return &sh, err
+}
+
+func (s *PgStore) CreateShare(ctx context.Context, tokenHash []byte, sh *Share) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// The row lock serializes a user's links, so they cannot exceed
+		// the limit together.
+		var id int64
+		err := tx.QueryRow(ctx, "SELECT id FROM users WHERE id = $1 FOR UPDATE", sh.CreatedBy).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM shares WHERE created_by = $1 AND expires_at > now()", id).Scan(&n); err != nil {
+			return err
+		}
+		if n >= MaxShares {
+			return ErrTooMany
+		}
+		return tx.QueryRow(ctx, `INSERT INTO shares (token_hash, path, is_dir, created_by, password_hash, expires_at)
+			VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
+			tokenHash, sh.Path, sh.IsDir, id, sh.PasswordHash, sh.ExpiresAt).Scan(&sh.ID, &sh.CreatedAt)
+	})
+}
+
+func (s *PgStore) ShareByToken(ctx context.Context, tokenHash []byte) (*Share, error) {
+	return scanShare(s.db.QueryRow(ctx, "SELECT "+shareColumns+` FROM shares s JOIN users u ON u.id = s.created_by
+		WHERE s.token_hash = $1 AND s.expires_at > now()`, tokenHash))
+}
+
+func (s *PgStore) Shares(ctx context.Context, userID int64) ([]Share, error) {
+	rows, err := s.db.Query(ctx, "SELECT "+shareColumns+` FROM shares s JOIN users u ON u.id = s.created_by
+		WHERE s.expires_at > now() AND ($1::bigint = 0 OR s.created_by = $1) ORDER BY s.created_at DESC, s.id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (Share, error) {
+		sh, err := scanShare(row)
+		if err != nil {
+			return Share{}, err
+		}
+		return *sh, nil
+	})
+}
+
+func (s *PgStore) DeleteShare(ctx context.Context, id, userID int64) error {
+	tag, err := s.db.Exec(ctx, "DELETE FROM shares WHERE id = $1 AND ($2::bigint = 0 OR created_by = $2)", id, userID)
+	if err == nil && tag.RowsAffected() == 0 {
+		err = ErrNotFound
+	}
+	return err
+}
+
+func (s *PgStore) DeleteExpiredShares(ctx context.Context) error {
+	_, err := s.db.Exec(ctx, "DELETE FROM shares WHERE expires_at <= now()")
 	return err
 }
 
